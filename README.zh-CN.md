@@ -52,7 +52,8 @@
    ```
 
 4. 启动一次游戏（进主菜单即可），mod 会在 `MelonPreferences.cfg` 里写好 `[CustomFireSupport]` 段。
-   压缩包里还带一份 `CustomFireSupport.cfg`，内容与它完全一致，可以直接覆盖那一段。
+   压缩包里还带 `CustomFireSupport.cfg`（中文注释）与 `CustomFireSupport.en.cfg`（英文注释），
+   内容与它完全一致，可以直接覆盖那一段。
 
    日志关键字：`[CustomFireSupport]`；日志文件：`Bin\MelonLoader\Latest.log`。
 
@@ -225,7 +226,8 @@
 | 全局（8） | `Enabled`、`HideVanillaFireSupport`、`IlluminationOnlyAtNight`、`SmokeOnlyDuringDay`、`VerboseLogging`、`CasDeployDistanceMeters`、`CasDeployBearingDegrees`、`CasPrewarmKeys` |
 | 每槽（15 × 6） | `SlotN_Enabled`、`SlotN_Type`、`SlotN_DisplayName`、`SlotN_Missions`、`SlotN_RoundsPerCall`、`SlotN_Munition`、`SlotN_Weapon`、`SlotN_ImpactDelaySeconds`、`SlotN_InterShotDelaySeconds`、`SlotN_DispersionMeters`、`SlotN_CooldownSeconds`、`SlotN_AmmoName`、`SlotN_CasFlyover`、`SlotN_CasAccuracy`、`SlotN_CasAttackTypes` |
 
-压缩包里的 `CustomFireSupport.cfg`（仓库里是 `docs\SampleConfig.cfg`）就是这 98 个键的完整预设，含逐键中文注释，可以直接照抄改。
+压缩包里的 `CustomFireSupport.cfg`（中文注释）与 `CustomFireSupport.en.cfg`（英文注释）就是这 98 个键的完整预设
+（仓库里是 `docs\SampleConfig.cfg` 与 `docs\SampleConfig.en.cfg`），照抄改即可。
 
 ---
 

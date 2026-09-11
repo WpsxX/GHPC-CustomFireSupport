@@ -54,8 +54,9 @@ Set a slot's `Enabled` to `false` if you do not need it; to repurpose a slot, se
    ```
 
 4. Start the game once (reaching the main menu is enough); the mod writes the `[CustomFireSupport]`
-   section into `MelonPreferences.cfg`. The zip also carries a `CustomFireSupport.cfg` with exactly the
-   same content, which you can use to overwrite that section instead.
+   section into `MelonPreferences.cfg`. The zip also carries `CustomFireSupport.cfg` (and its
+   English-commented twin `CustomFireSupport.en.cfg`) with exactly the same content, either of which you
+   can use to overwrite that section instead.
 
    Log tag: `[CustomFireSupport]`. Log file: `Bin\MelonLoader\Latest.log`.
 
@@ -230,9 +231,9 @@ Aliases: `Single`, `Pass`, `One` → `SinglePass`; `Loiter`, `Orbit`, `Stay` →
 | Global (8) | `Enabled`, `HideVanillaFireSupport`, `IlluminationOnlyAtNight`, `SmokeOnlyDuringDay`, `VerboseLogging`, `CasDeployDistanceMeters`, `CasDeployBearingDegrees`, `CasPrewarmKeys` |
 | Per slot (15 × 6) | `SlotN_Enabled`, `SlotN_Type`, `SlotN_DisplayName`, `SlotN_Missions`, `SlotN_RoundsPerCall`, `SlotN_Munition`, `SlotN_Weapon`, `SlotN_ImpactDelaySeconds`, `SlotN_InterShotDelaySeconds`, `SlotN_DispersionMeters`, `SlotN_CooldownSeconds`, `SlotN_AmmoName`, `SlotN_CasFlyover`, `SlotN_CasAccuracy`, `SlotN_CasAttackTypes` |
 
-The `CustomFireSupport.cfg` in the zip (in the repository: `docs\SampleConfig.cfg`, with
-`docs\SampleConfig.en.cfg` as its fully English-commented twin) holds the complete preset of those 98
-keys, so you can copy from it directly.
+The zip carries the complete preset of those 98 keys twice: `CustomFireSupport.cfg` (per-key Chinese
+comments) and `CustomFireSupport.en.cfg` (per-key English comments) — `docs\SampleConfig.cfg` and
+`docs\SampleConfig.en.cfg` in the repository. Copy whichever one you prefer.
 
 ---
 
