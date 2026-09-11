@@ -1,0 +1,34 @@
+# Build outputs
+[Bb]in/
+[Oo]bj/
+
+# Visual Studio / Rider
+.vs/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Tool logs
+*.log
+
+# Local backups and scratch files
+*.bak-*
+*.bak
+
+# MelonLoader-generated settings (keep local only).
+# The samples we ship stay tracked - see the re-includes below. Keep this list in sync whenever a new
+# docs/*.cfg is added: a bare "*.cfg" above silently drops it from the repository.
+UserData/
+*.cfg
+!docs/SampleConfig.cfg
+!docs/SampleConfig.en.cfg
+
+# Release artifacts: they attach to GitHub Releases, they are not committed.
+*.zip
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
