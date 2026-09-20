@@ -92,7 +92,7 @@ namespace CustomFireSupport
         private static readonly Dictionary<string, GameObject> _built = new Dictionary<string, GameObject>();
 
         /// <summary>Every round this factory cloned, so the patches can recognise the mod's own ammo.</summary>
-        private static readonly List<AmmoType> _ourRounds = new List<AmmoType>();
+        private static readonly WeakIdentitySet<AmmoType> _ourRounds = new WeakIdentitySet<AmmoType>();
 
         /// <summary>Ammo codex per profile key (avoids rescanning every slot build).</summary>
         private static readonly Dictionary<string, AmmoCodexScriptable> _ammo = new Dictionary<string, AmmoCodexScriptable>();
@@ -201,7 +201,7 @@ namespace CustomFireSupport
         // ------------------------------------------------------------------
 
         /// <summary>Missile ammo built by this factory, so the patches can recognise our own rounds.</summary>
-        private static readonly List<AmmoType> _ourMissiles = new List<AmmoType>();
+        private static readonly WeakIdentitySet<AmmoType> _ourMissiles = new WeakIdentitySet<AmmoType>();
 
         /// <summary>Once-per-key warnings for a missile payload that cannot be assembled.</summary>
         private static readonly HashSet<string> _warnedMissingMissile = new HashSet<string>();
@@ -675,18 +675,7 @@ namespace CustomFireSupport
         /// <summary>True for a missile round this factory built (reference match, not name match).</summary>
         internal static bool IsOurMissile(AmmoType ammo)
         {
-            if (ammo == null)
-            {
-                return false;
-            }
-            for (int i = 0; i < _ourMissiles.Count; i++)
-            {
-                if (ReferenceEquals(_ourMissiles[i], ammo))
-                {
-                    return true;
-                }
-            }
-            return false;
+            return _ourMissiles.Contains(ammo);
         }
 
         // ------------------------------------------------------------------
@@ -772,18 +761,7 @@ namespace CustomFireSupport
         /// <summary>True for an AmmoType this factory built (reference match, not name match).</summary>
         internal static bool IsOurRound(AmmoType ammo)
         {
-            if (ammo == null)
-            {
-                return false;
-            }
-            for (int i = 0; i < _ourRounds.Count; i++)
-            {
-                if (ReferenceEquals(_ourRounds[i], ammo))
-                {
-                    return true;
-                }
-            }
-            return false;
+            return _ourRounds.Contains(ammo);
         }
 
         // ------------------------------------------------------------------
@@ -1461,10 +1439,12 @@ namespace CustomFireSupport
         }
 
         /// <summary>Shallow field-by-field copy of an AmmoType (all public instance fields).</summary>
+        private static readonly FieldInfo[] AmmoFields = typeof(AmmoType).GetFields(BindingFlags.Public | BindingFlags.Instance);
+
         private static AmmoType CloneAmmoType(AmmoType donor)
         {
             AmmoType clone = new AmmoType();
-            FieldInfo[] fields = typeof(AmmoType).GetFields(BindingFlags.Public | BindingFlags.Instance);
+            FieldInfo[] fields = AmmoFields;
             for (int i = 0; i < fields.Length; i++)
             {
                 FieldInfo field = fields[i];

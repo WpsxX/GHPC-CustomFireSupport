@@ -49,6 +49,16 @@ namespace CustomFireSupport
         }
 
         private static readonly List<GameObject> _bundlePrefabs = new List<GameObject>();
+        internal static readonly HashSet<Material> BundleMaterials = new HashSet<Material>();
+        internal static readonly HashSet<Shader> BundleShaders = new HashSet<Shader>();
+        // Prefabs are pinned for the session; their renderer hierarchy does not need rescanning.
+        internal static readonly HashSet<Renderer> BundleRenderers = new HashSet<Renderer>();
+        private static readonly HashSet<AmmoType> _bundleAmmo = new HashSet<AmmoType>(AmmoReferenceComparer.Instance);
+
+        internal static bool IsBundledAmmo(AmmoType ammo)
+        {
+            return ammo != null && _bundleAmmo.Contains(ammo);
+        }
 
         /// <summary>
         /// Every GameObject inside the bundled prefabs, roots AND children. LoadAllAssets() only hands back
@@ -76,6 +86,11 @@ namespace CustomFireSupport
             {
                 return false;
             }
+
+            Material material = asset as Material;
+            if (material != null) return BundleMaterials.Contains(material);
+            Shader shader = asset as Shader;
+            if (shader != null) return BundleShaders.Contains(shader);
 
             GameObject go = asset as GameObject;
             if (go == null)
@@ -109,6 +124,8 @@ namespace CustomFireSupport
                 return;
             }
             Transform[] transforms = prefab.GetComponentsInChildren<Transform>(true);
+            foreach (Renderer renderer in prefab.GetComponentsInChildren<Renderer>(true))
+                if (renderer != null) BundleRenderers.Add(renderer);
             for (int i = 0; i < transforms.Length; i++)
             {
                 if (transforms[i] != null)
@@ -221,6 +238,10 @@ namespace CustomFireSupport
 
             try
             {
+                // Dependencies are not returned by LoadAllAssets. Record materials/shaders introduced
+                // by this synchronous load, including the hardpoints' indirect ShotVisual prefabs.
+                HashSet<Material> previousMaterials = new HashSet<Material>(Resources.FindObjectsOfTypeAll<Material>());
+                HashSet<Shader> previousShaders = new HashSet<Shader>(Resources.FindObjectsOfTypeAll<Shader>());
                 AssetBundle bundle = AssetBundle.LoadFromFile(path);
                 if (bundle == null)
                 {
@@ -230,6 +251,10 @@ namespace CustomFireSupport
 
                 UnityEngine.Object[] assets = bundle.LoadAllAssets();
                 _casBundle = bundle;
+                foreach (Material material in Resources.FindObjectsOfTypeAll<Material>())
+                    if (material != null && !previousMaterials.Contains(material)) BundleMaterials.Add(material);
+                foreach (Shader shader in Resources.FindObjectsOfTypeAll<Shader>())
+                    if (shader != null && !previousShaders.Contains(shader)) BundleShaders.Add(shader);
 
                 int prefabs = 0;
                 int loadouts = 0;
@@ -257,6 +282,38 @@ namespace CustomFireSupport
                     else if (asset is CASLoadoutScriptable)
                     {
                         loadouts++;
+                    }
+                }
+
+                // CAS munitions live outside the hardpoint transform hierarchy.
+                int rootCount = _bundlePrefabs.Count;
+                for (int p = 0; p < rootCount; p++)
+                {
+                    foreach (CASHardpoint hardpoint in _bundlePrefabs[p].GetComponentsInChildren<CASHardpoint>(true))
+                    {
+                        // CASHardpoint._ammo is private in the shipped game assembly.  The
+                        // publicized reference used at build time exposes it, but that does not
+                        // change the runtime access check, so touching it here throws a
+                        // FieldAccessException and aborts the entire CAS pre-warm.  Use the public
+                        // Ammo property and treat an uninitialised hardpoint as an empty one.
+                        AmmoType ammo;
+                        try
+                        {
+                            ammo = hardpoint == null ? null : hardpoint.Ammo;
+                        }
+                        catch (Exception)
+                        {
+                            Log.Warn("CAS pre-warm: skipping hardpoint '" +
+                                     (hardpoint == null ? "<null>" : hardpoint.name) +
+                                     "' whose ammo could not be read.");
+                            continue;
+                        }
+                        if (ammo == null) continue;
+                        _bundleAmmo.Add(ammo);
+                        GameObject visual = ammo.ShotVisual;
+                        if (visual == null || _bundleObjects.Contains(visual)) continue;
+                        _bundlePrefabs.Add(visual);
+                        TrackBundlePrefab(visual);
                     }
                 }
 

@@ -701,6 +701,8 @@ namespace CustomFireSupport
 
             private static readonly MethodInfo GetTargetVelocityMethod =
                 AccessTools.Method(typeof(CASController), "GetTargetVelocity", Type.EmptyTypes);
+            private static readonly Func<CASController, Vector3> GetTargetVelocity =
+                CachedDelegate.Create<Func<CASController, Vector3>>(GetTargetVelocityMethod);
 
             private static void Postfix(CASController __instance, ref Vector3 __result)
             {
@@ -759,7 +761,11 @@ namespace CustomFireSupport
                     Vector3 targetVelocity = Vector3.zero;
                     try
                     {
-                        if (GetTargetVelocityMethod != null)
+                        if (GetTargetVelocity != null)
+                        {
+                            targetVelocity = GetTargetVelocity(__instance);
+                        }
+                        else if (GetTargetVelocityMethod != null)
                         {
                             targetVelocity = (Vector3)GetTargetVelocityMethod.Invoke(__instance, null);
                         }
@@ -1790,9 +1796,19 @@ namespace CustomFireSupport
                 AccessTools.Method(typeof(CASController), "EnterState");
             private static readonly MethodInfo GetIdealAttackTypeMethod =
                 AccessTools.Method(typeof(CASController), "GetIdealAttackType");
+            private static readonly Func<CASController, Unit, CASAttackType> GetIdealAttackType =
+                CachedDelegate.Create<Func<CASController, Unit, CASAttackType>>(GetIdealAttackTypeMethod);
+            private static readonly object TurnTowardTarget = ResolveTurnState();
 
             /// <summary>Target -> the plane currently attacking it.</summary>
             private static readonly Dictionary<Unit, CASController> Claims = new Dictionary<Unit, CASController>();
+            private static readonly List<Unit> ReleasedClaims = new List<Unit>();
+
+            internal static void ResetForScene()
+            {
+                Claims.Clear();
+                ReleasedClaims.Clear();
+            }
 
             private static void Postfix(CASController __instance)
             {
@@ -1803,14 +1819,13 @@ namespace CustomFireSupport
                         return;
                     }
 
+                    // Release this plane's previous claim even when it lost its current target.
+                    PruneClaims(__instance);
                     Unit chosen = __instance.FinalTarget;
                     if (chosen == null)
                     {
                         return;
                     }
-
-                    PruneStaleClaims();
-                    ReleasePlaneClaims(__instance);
 
                     Unit result = chosen;
                     if (IsClaimedByOther(chosen, __instance))
@@ -1855,7 +1870,7 @@ namespace CustomFireSupport
                 Vector3 interest = InterestRef(plane);
 
                 // 1) The plane's own spotted list (vanilla already filtered visibility + attackability).
-                Unit best = FindNearest(plane, SpottedRef(plane), interest, exclude, float.MaxValue);
+                Unit best = FindNearest(plane, SpottedRef(plane), interest, exclude);
                 if (best != null)
                 {
                     return best;
@@ -1869,7 +1884,7 @@ namespace CustomFireSupport
                 }
 
                 Unit wideBest = null;
-                float wideBestDistance = WideSearchRadius;
+                float wideBestDistanceSquared = WideSearchRadius * WideSearchRadius;
                 for (int f = 0; f < allUnits.Length; f++)
                 {
                     Faction faction = (Faction)f;
@@ -1893,23 +1908,23 @@ namespace CustomFireSupport
                         {
                             continue;
                         }
+                        Transform center = candidate.Center;
+                        if (center == null) continue;
+                        float distanceSquared = (center.position - interest).sqrMagnitude;
+                        if (!(distanceSquared < wideBestDistanceSquared)) continue;
                         if (!CanPlaneAttack(plane, candidate))
                         {
                             continue; // no weapon for it - vanilla would end the run instead.
                         }
 
-                        float distance = Vector3.Distance(candidate.Center.position, interest);
-                        if (distance < wideBestDistance)
-                        {
-                            wideBestDistance = distance;
-                            wideBest = candidate;
-                        }
+                        wideBestDistanceSquared = distanceSquared;
+                        wideBest = candidate;
                     }
                 }
                 return wideBest;
             }
 
-            private static Unit FindNearest(CASController plane, List<Unit> candidates, Vector3 interest, Unit exclude, float maxDistance)
+            private static Unit FindNearest(CASController plane, List<Unit> candidates, Vector3 interest, Unit exclude)
             {
                 if (candidates == null || candidates.Count == 0)
                 {
@@ -1917,7 +1932,7 @@ namespace CustomFireSupport
                 }
 
                 Unit best = null;
-                float bestDistance = maxDistance;
+                float bestDistanceSquared = float.PositiveInfinity;
                 for (int i = 0; i < candidates.Count; i++)
                 {
                     Unit candidate = candidates[i];
@@ -1930,10 +1945,12 @@ namespace CustomFireSupport
                         continue;
                     }
 
-                    float distance = Vector3.Distance(candidate.Center.position, interest);
-                    if (distance < bestDistance)
+                    Transform center = candidate.Center;
+                    if (center == null) continue;
+                    float distanceSquared = (center.position - interest).sqrMagnitude;
+                    if (distanceSquared < bestDistanceSquared)
                     {
-                        bestDistance = distance;
+                        bestDistanceSquared = distanceSquared;
                         best = candidate;
                     }
                 }
@@ -1948,6 +1965,8 @@ namespace CustomFireSupport
                 }
                 try
                 {
+                    if (GetIdealAttackType != null)
+                        return GetIdealAttackType(plane, unit) != CASAttackType.Inert;
                     object result = GetIdealAttackTypeMethod.Invoke(plane, new object[] { unit });
                     // CASAttackType.Inert is GHPC's own "this aircraft has no weapon for that target"
                     // sentinel, so a plane that answers Inert is skipped as a candidate. It is not the
@@ -1963,19 +1982,13 @@ namespace CustomFireSupport
 
             private static void RecomputeAttackParams(CASController plane)
             {
-                if (EnterStateMethod == null)
+                if (EnterStateMethod == null || TurnTowardTarget == null)
                 {
                     return;
                 }
                 try
                 {
-                    ParameterInfo[] parameters = EnterStateMethod.GetParameters();
-                    if (parameters.Length != 1)
-                    {
-                        return;
-                    }
-                    object state = Enum.Parse(parameters[0].ParameterType, "TurnTowardTarget");
-                    EnterStateMethod.Invoke(plane, new object[] { state });
+                    EnterStateMethod.Invoke(plane, new object[] { TurnTowardTarget });
                 }
                 catch (Exception ex)
                 {
@@ -1983,52 +1996,32 @@ namespace CustomFireSupport
                 }
             }
 
-            private static void ReleasePlaneClaims(CASController plane)
+            private static object ResolveTurnState()
             {
-                List<Unit> release = null;
-                foreach (KeyValuePair<Unit, CASController> pair in Claims)
+                try
                 {
-                    if (pair.Value == plane)
-                    {
-                        if (release == null)
-                        {
-                            release = new List<Unit>();
-                        }
-                        release.Add(pair.Key);
-                    }
+                    if (EnterStateMethod == null) return null;
+                    ParameterInfo[] parameters = EnterStateMethod.GetParameters();
+                    return parameters.Length == 1
+                        ? Enum.Parse(parameters[0].ParameterType, "TurnTowardTarget") : null;
                 }
-                if (release != null)
-                {
-                    for (int i = 0; i < release.Count; i++)
-                    {
-                        Claims.Remove(release[i]);
-                    }
-                }
+                catch { return null; }
             }
 
-            private static void PruneStaleClaims()
+            private static void PruneClaims(CASController searchingPlane)
             {
-                List<Unit> stale = null;
+                ReleasedClaims.Clear();
                 foreach (KeyValuePair<Unit, CASController> pair in Claims)
                 {
                     Unit target = pair.Key;
                     CASController plane = pair.Value;
-                    if (target == null || plane == null || plane.FinalTarget != target)
+                    if (target == null || plane == null || plane == searchingPlane || plane.FinalTarget != target)
                     {
-                        if (stale == null)
-                        {
-                            stale = new List<Unit>();
-                        }
-                        stale.Add(target);
+                        ReleasedClaims.Add(target);
                     }
                 }
-                if (stale != null)
-                {
-                    for (int i = 0; i < stale.Count; i++)
-                    {
-                        Claims.Remove(stale[i]);
-                    }
-                }
+                for (int i = 0; i < ReleasedClaims.Count; i++) Claims.Remove(ReleasedClaims[i]);
+                ReleasedClaims.Clear();
             }
         }
     }

@@ -99,12 +99,27 @@ namespace CustomFireSupport
         private const float HedpRhaPenetration = 70f;
 
         /// <summary>
-        /// Blast filler of one submunition, in kg TNTe (150 g of explosive inside a 1.5 kg dual-purpose
-        /// body). It is not decoration: the game derives the overpressure radius from it
-        /// (Sadovskiy: 14.022 * kg^(1/3) m, about 7 m here, against about 4.6 m for the 35 g this round
-        /// used to carry) and it is the value the frag cloud's damage and range floor are scaled from.
+        /// Blast filler of one submunition, in kg TNTe - **40 g, what a real 50 mm dual-purpose bomblet
+        /// actually carries** (a 1.5 kg body is mostly steel, not explosive).
+        ///
+        /// NO OVERPRESSURE, BY DESIGN. The player's call: a charge this small does not overpressure
+        /// anything. The game agrees once the number is honest:
+        ///
+        ///   * <c>BlastEffectManager.HandleExplosiveBlast</c> only applies overpressure when
+        ///     <c>TNT - armourAlongPath * 0.2 &gt; 0</c>. At 40 g that needs the blast to reach the
+        ///     component through **less than 0.2 mm RHAe** - i.e. nothing on a vehicle. (At the 150 g this
+        ///     used to be it survived 0.75 mm, which still is not much, but the number was wrong anyway.)
+        ///   * The overpressure radius it is gated by (Sadovskiy, <c>14.022 * kg^(1/3)</c>) drops from
+        ///     ~7.4 m to ~4.8 m.
+        ///   * <c>_compartmentHit?.InsertOverpressure(...)</c> runs for <c>_isHe</c> only, and this round
+        ///     is HEAT (<c>_isHeat</c>), so it never had a compartment overpressure to begin with.
+        ///
+        /// The anti-personnel frag cloud does NOT shrink with it - both of its terms are floored:
+        /// <c>maxFragRange = clamp(TNT*7, 20, 200)</c> and <c>maxFragDamage = clamp(TNT, 3, 60)</c>, so at
+        /// 40 g they are still 20 m and 3, i.e. the same 30 m / 4.5 the player already tuned. Only the
+        /// camera shake and the blast audio get quieter, which is what 40 g should sound like.
         /// </summary>
-        private const float HedpTntKilograms = 0.15f;
+        private const float HedpTntKilograms = 0.04f;
 
         /// <summary>All-up mass of one submunition, in kg.</summary>
         private const float HedpMassKilograms = 1.5f;
@@ -131,24 +146,26 @@ namespace CustomFireSupport
         private const float HedpSpallMultiplier = 0.5f;
 
         /// <summary>
-        /// Fragments one submunition throws when it goes off. This is the count the player asked for
-        /// ("加 10-20 个破片").
+        /// Fragments one submunition throws when it goes off: the scored / pre-formed steel body of a
+        /// real 50 mm HEDP submunition breaking up. 20 rather than 16 because the fragments now leave in
+        /// **every** direction (see <see cref="ClusterFragments"/>), and the ones that depart downwards
+        /// are stopped by the ground within a metre or two - so roughly half of them never reach anyone.
+        /// 20 keeps the number that actually flies out over the target where it was.
         ///
         /// It does NOT go into <c>AmmoType.DetonateSpallCount</c>: that field feeds the game's own
-        /// createExplosion, which takes its rounds from the INVISIBLE pool - the fragments would be lethal
-        /// and completely unseen. The burst is spawned by <see cref="ClusterFragments"/> from the game's
-        /// visible spall pool instead, so the field below is left at 0 and this is the single count.
+        /// createExplosion, which takes its rounds from the INVISIBLE pool - the fragments would be
+        /// lethal and completely unseen. The burst is spawned by <see cref="ClusterFragments"/> from the
+        /// game's visible spall pool instead, so the field below is left at 0 and this is the one count.
         /// </summary>
-        internal const int HedpFragmentCount = 16;
+        internal const int HedpFragmentCount = 20;
 
         /// <summary>
-        /// Total opening of the fragment cone, in degrees, measured around straight up. The submunition
-        /// opens about 100 m above the target, and the burst used the game's own full-sphere draw, which
-        /// sent a good part of it straight into the ground under the shell - hence "the fragments dig
-        /// themselves into the ground". With a 160 degree cone the outermost fragments leave 10 degrees
-        /// above the horizon, so every one of them travels out over the target instead of down into it.
+        /// The submunition's **shaped-charge jet stays vanilla.** The body's copper-liner cone forms the
+        /// jet, and whether it defeats the armour it hits is decided by the game's own HEAT path at
+        /// impact - the mod sets the warhead's data (70 mm RHAe, see HedpRhaPenetration) and nothing
+        /// else. In particular the fragment burst never rotates or steers the submunition itself, so
+        /// "the jet following the fragments" cannot happen.
         /// </summary>
-        internal const float HedpFragmentConeDegrees = 160f;
 
         /// <summary>
         /// HEAT rounds fuse and blast on whatever solid object they touch, penetrated or not - this is
@@ -628,10 +645,12 @@ namespace CustomFireSupport
         /// Shallow field-by-field copy of an AmmoType (all public instance fields). Shared with
         /// <see cref="ClusterFragments"/>, which clones the game's own spall round the same way.
         /// </summary>
+        private static readonly FieldInfo[] AmmoFields = typeof(AmmoType).GetFields(BindingFlags.Public | BindingFlags.Instance);
+
         internal static AmmoType CloneAmmoType(AmmoType donor)
         {
             AmmoType clone = new AmmoType();
-            FieldInfo[] fields = typeof(AmmoType).GetFields(BindingFlags.Public | BindingFlags.Instance);
+            FieldInfo[] fields = AmmoFields;
             for (int i = 0; i < fields.Length; i++)
             {
                 FieldInfo field = fields[i];

@@ -105,7 +105,11 @@
     <Compile Include="ArtilleryTiming.cs" />
     <Compile Include="CasAttackLibrary.cs" />
     <Compile Include="CasBundleMaterialRepair.cs" />
+    <Compile Include="CasImpactCacheRepair.cs" />
+    <Compile Include="WeakIdentitySet.cs" />
+    <Compile Include="CachedDelegate.cs" />
     <Compile Include="CasMaterialRecipe.cs" />
+    <Compile Include="CasNativeMaterialRecipe.cs" />
     <Compile Include="CasMissileVisualRepair.cs" />
     <Compile Include="CasMissileMotorBurnout.cs" />
     <Compile Include="FactionShellCatalog.cs" />
