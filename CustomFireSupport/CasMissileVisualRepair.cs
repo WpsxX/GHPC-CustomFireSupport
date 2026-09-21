@@ -18,20 +18,17 @@ namespace CustomFireSupport
     /// puff instead of the real effect - which is a cosmetic difference, never a white box.
     ///
     /// It runs when the round is actually spawned (LiveRound.Init), because that is the first moment the
-    /// mission is guaranteed to be fully loaded. It shares the material index rebuilt after scene
-    /// initialization and mission preparation, so a salvo never triggers a global scan per material.
+    /// mission is guaranteed to be fully loaded. The mapping is remembered per material name, and a name
+    /// the game did not have loaded is retried on the next shot.
     /// </summary>
     internal static class CasMissileVisualRepair
     {
         private const string OurShaderPrefix = "CustomFireSupport/";
 
-        /// <summary>Names already reported in this scene.</summary>
-        private static readonly HashSet<string> _reported = new HashSet<string>();
+        /// <summary>bundle material name -> the game's own material (null when it was not found yet).</summary>
+        private static readonly Dictionary<string, Material> _adopted = new Dictionary<string, Material>(StringComparer.Ordinal);
 
-        internal static void ResetForScene()
-        {
-            _reported.Clear();
-        }
+        private static readonly HashSet<string> _reported = new HashSet<string>();
 
         /// <summary>Renderer names whose material could not be adopted and that are hidden instead.</summary>
         private static readonly string[] HideWhenApproximate = { "distortion", "heat" };
@@ -127,9 +124,10 @@ namespace CustomFireSupport
             {
                 return false;
             }
+            string lower = name.ToLowerInvariant();
             for (int i = 0; i < HideWhenApproximate.Length; i++)
             {
-                if (name.IndexOf(HideWhenApproximate[i], StringComparison.OrdinalIgnoreCase) >= 0)
+                if (lower.Contains(HideWhenApproximate[i]))
                 {
                     return true;
                 }
@@ -149,7 +147,34 @@ namespace CustomFireSupport
                 return null;
             }
 
-            Material found = CasBundleMaterialRepair.FindGameMaterial(name);
+            Material cached;
+            if (_adopted.TryGetValue(name, out cached))
+            {
+                return cached; // may be null: retried on the next shot
+            }
+
+            Material found = null;
+            Material[] loaded = Resources.FindObjectsOfTypeAll<Material>();
+            for (int i = 0; i < loaded.Length; i++)
+            {
+                Material candidate = loaded[i];
+                if (candidate == null || !string.Equals(candidate.name, name, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                if (CasPrewarmer.IsFromOurBundle(candidate))
+                {
+                    continue;
+                }
+                if (candidate.shader == null || candidate.shader.name.StartsWith(OurShaderPrefix, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                found = candidate;
+                break;
+            }
+
+            _adopted[name] = found;
             if (_reported.Add(name))
             {
                 Log.Info("CAS missile visual: effect material '" + name + "' " +

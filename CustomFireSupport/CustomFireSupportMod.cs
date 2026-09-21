@@ -2,7 +2,7 @@ using System;
 using MelonLoader;
 //using UnityEngine;
 
-[assembly: MelonInfo(typeof(CustomFireSupport.CustomFireSupportMod), "CustomFireSupport", "1.0.1", "WpsxX")]
+[assembly: MelonInfo(typeof(CustomFireSupport.CustomFireSupportMod), "CustomFireSupport", "1.0.2", "WpsxX")]
 [assembly: MelonGame("Radian Simulations LLC", "GHPC")]
 
 namespace CustomFireSupport
@@ -36,7 +36,7 @@ namespace CustomFireSupport
             {
                 ConfigSchema.Initialize();
                 HarmonyInstance.PatchAll();
-                Log.Info("loaded (v1.0.1). Config file: Bin\\UserData\\MelonPreferences.cfg -> [CustomFireSupport] (keys Slot1_* .. Slot6_*)");
+                Log.Info("loaded (v1.0.2). Config file: Bin\\UserData\\MelonPreferences.cfg -> [CustomFireSupport] (keys Slot1_* .. Slot6_*)");
                 Log.Info("The slots are built at the start of every mission; edit the cfg and restart the mission to apply changes.");
             }
             catch (Exception ex)
@@ -58,7 +58,9 @@ namespace CustomFireSupport
 
         public override void OnSceneWasInitialized(int buildIndex, string sceneName)
         {
-            // MelonLoader dispatches this after scene loading; native effect assets can now be bound.
+            // Native effect shaders are guaranteed to be available after scene initialization. Retry
+            // the bundle material binding here so rocket/smoke/illumination particles do not stay on
+            // the placeholder shader chosen during the early menu load.
             CasBundleMaterialRepair.RefreshForScene();
         }
 

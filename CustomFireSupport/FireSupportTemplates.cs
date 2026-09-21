@@ -98,9 +98,8 @@ namespace CustomFireSupport
         internal AttackKind[] AvailableAttacks = new AttackKind[0];
 
         /// <summary>
-        /// Attack types backed by a real CASHardpoint prefab in this loadout.  A loadout can contain a
-        /// CASAttackMeta entry without mounting the corresponding weapon; that entry only affects target
-        /// selection and must not make a bomb/rocket candidate look usable.
+        /// Attack types backed by a real CASHardpoint prefab in this loadout. CASAttackMeta may contain
+        /// an entry without a mounted weapon; the game ultimately checks the instantiated hardpoints.
         /// </summary>
         internal AttackKind[] MountedAttacks = new AttackKind[0];
 
@@ -143,9 +142,8 @@ namespace CustomFireSupport
     internal static class FireSupportTemplates
     {
         /// <summary>
-        /// A hardpoint is usable only when its ammo codex, projectile visual and stored capacity are
-        /// present. Some exported CAS prefabs retain a type/attack entry after their ammo asset was
-        /// stripped; accepting those entries makes the aircraft fly a pass with nothing to launch.
+        /// Exported CAS prefabs can retain an attack type after their ammo reference was stripped.
+        /// Such a hardpoint makes the aircraft fly a pass with no usable projectile.
         /// </summary>
         internal static bool IsUsableHardpoint(CASHardpoint hardpoint)
         {

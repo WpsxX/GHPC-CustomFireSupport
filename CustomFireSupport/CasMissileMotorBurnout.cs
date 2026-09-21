@@ -68,8 +68,6 @@ namespace CustomFireSupport
                     string trail = StopMotorParticles();
                     int lights = SetLightsOff();
                     int audio = StopAudio();
-                    // These custom visuals are destroyed rather than pooled. All timed work is done.
-                    enabled = false;
                     Log.Info("CAS missile motor: burnout after " + SustainBurnSeconds.ToString("0.#") +
                              " s of flight - " + count + " flame object(s) off, " + trail +
                              ", " + audio + " engine audio source(s) off, " + lights +

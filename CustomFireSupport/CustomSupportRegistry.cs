@@ -153,7 +153,6 @@ namespace CustomFireSupport
                 // (menu) has not already done so - they then feed the donor scan and the library
                 // below even when this mission offers no CAS of its own.
                 CasPrewarmer.EnsurePrewarmed();
-                CasBundleMaterialRepair.RefreshForScene();
 
                 _fireManager = EnsureFireMissionManager(mapController);
                 _casManager = EnsureCasSupportManager(mapController);
@@ -607,7 +606,7 @@ namespace CustomFireSupport
 
         internal static void ResetForScene()
         {
-            FireSupportPatches.CasTargetSpreadPatch.ResetForScene();
+            CasCallReadinessRepair.ResetForScene();
             // A new scene means a new mission: the slots must be built again for it.
             _preparedThisMission = false;
             Teardown(false);

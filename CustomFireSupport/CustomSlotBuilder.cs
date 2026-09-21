@@ -356,12 +356,9 @@ namespace CustomFireSupport
                 ? BuildAttacksForKinds(requestedKinds, template)
                 : FilterAttacks(config, template);
 
-            // Filtering CASAttackMeta alone is not enough. GHPC chooses the final attack from the
-            // mounted hardpoints, so a Rockets-only slot that still carries the template's Bombs
-            // pylons can select Bombs for a soft target even though its Bombs metadata was removed;
-            // GetAttackMetaByType then returns null and the aircraft flies the pass without firing.
-            // Restrict the physical payload to the explicitly requested types as well. A single
-            // matching prefab is reused on every pylon, which is always a valid GHPC loadout.
+            // CASAttackMeta does not control CanDoAttackType(); the game inspects the mounted
+            // hardpoints. Keep physical mounts in lockstep with an explicit attack filter so an
+            // unrequested bomb/rocket cannot be selected during target classification.
             if (config.AttackTypes != null && config.AttackTypes.Length > 0)
             {
                 hardpoints = RestrictHardpoints(hardpoints, config.AttackTypes, template.AttachPointCount);
@@ -612,11 +609,6 @@ namespace CustomFireSupport
             return attachPoints > 0 && hardpoints.Length >= attachPoints;
         }
 
-        /// <summary>
-        /// Keeps the mounted hardpoints in lockstep with an explicit CasAttackTypes filter. The game
-        /// does not use CASAttackMeta as the source of CanDoAttackType(); it inspects the instantiated
-        /// hardpoints, so leaving an unrequested Bombs/Rockets prefab here reintroduces the attack type.
-        /// </summary>
         private static GameObject[] RestrictHardpoints(GameObject[] source, AttackKind[] requested,
             int attachPoints)
         {
@@ -656,7 +648,6 @@ namespace CustomFireSupport
             {
                 return source;
             }
-
             if (requested.Length == 1 || matching.Count == 1)
             {
                 return new[] { matching[0] };

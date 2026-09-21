@@ -206,7 +206,19 @@ namespace CustomFireSupport
                 if (loadout != null && loadout.Loadout != null && loadout.Loadout.HardpointPrefabs != null &&
                     loadout.Loadout.HardpointPrefabs.Length > 0)
                 {
-                    loadouts.Add(loadout);
+                    bool duplicate = false;
+                    for (int j = 0; j < loadouts.Count; j++)
+                    {
+                        if (ReferenceEquals(loadouts[j], loadout))
+                        {
+                            duplicate = true;
+                            break;
+                        }
+                    }
+                    if (!duplicate)
+                    {
+                        loadouts.Add(loadout);
+                    }
                 }
             }
 
@@ -278,21 +290,86 @@ namespace CustomFireSupport
                         "loaded airframe" + (donorIsAsset[i] ? " prefab" : string.Empty), donorIsAsset[i], manager);
                 }
 
-                for (int j = 0; j < loadouts.Count; j++)
+                List<CASLoadoutScriptable> matches = FindLoadoutMatches(donor, manager, own, loadouts);
+                for (int j = 0; j < matches.Count; j++)
                 {
-                    if (ReferenceEquals(loadouts[j], own))
-                    {
-                        continue;
-                    }
-                    AddCandidate(templates, donor, loadouts[j], Faction.Neutral,
+                    AddCandidate(templates, donor, matches[j], Faction.Neutral,
                         "loaded airframe" + (donorIsAsset[i] ? " prefab" : string.Empty), donorIsAsset[i], manager);
                 }
 
-                if (own == null && loadouts.Count == 0)
+                if (own == null && matches.Count == 0)
                 {
-                    Log.Verbose("loaded airframe '" + donor.name + "' has no usable loadout asset - skipped.");
+                    Log.Verbose("loaded airframe '" + donor.name +
+                                "' has no loadout whose name identifies this aircraft - skipped.");
                 }
             }
+        }
+
+        /// <summary>
+        /// Returns only loadouts that identify the scanned aircraft. Pairing every aircraft with every
+        /// loaded loadout is mechanically tempting, but it creates hundreds of cross-aircraft pylons
+        /// (and lets a Pact aircraft receive a NATO pod). A loadout carried by the manager is always
+        /// authoritative; the name match is only the fallback used by exported bundle prefabs whose
+        /// serialized manager field is empty.
+        /// </summary>
+        private static List<CASLoadoutScriptable> FindLoadoutMatches(GameObject donor,
+            CASHardpointManager manager, CASLoadoutScriptable own, List<CASLoadoutScriptable> loadouts)
+        {
+            List<CASLoadoutScriptable> matches = new List<CASLoadoutScriptable>();
+            if (own != null && own.Loadout != null && own.Loadout.HardpointPrefabs != null &&
+                own.Loadout.HardpointPrefabs.Length > 0)
+            {
+                return matches;
+            }
+
+            string airframeName = donor == null ? string.Empty : donor.name;
+            int attachPoints = AttachCount(manager);
+            for (int i = 0; i < loadouts.Count; i++)
+            {
+                CASLoadoutScriptable loadout = loadouts[i];
+                if (loadout == null || loadout.Loadout == null || loadout.Loadout.HardpointPrefabs == null ||
+                    loadout.Loadout.HardpointPrefabs.Length == 0 || ReferenceEquals(loadout, own))
+                {
+                    continue;
+                }
+
+                if (!LoadoutNamesMatchAirframe(airframeName, loadout.name))
+                {
+                    continue;
+                }
+
+                int count = loadout.Loadout.HardpointPrefabs.Length;
+                if (attachPoints > 0 && count != 1 && count < attachPoints)
+                {
+                    continue;
+                }
+                matches.Add(loadout);
+            }
+            return matches;
+        }
+
+        private static bool LoadoutNamesMatchAirframe(string airframeName, string loadoutName)
+        {
+            if (string.IsNullOrEmpty(airframeName) || string.IsNullOrEmpty(loadoutName))
+            {
+                return false;
+            }
+
+            string airframe = NormalizeIdentity(airframeName);
+            string loadout = NormalizeIdentity(loadoutName);
+            string[] modelTokens =
+            {
+                "a10", "f104", "f15", "f4", "mig17", "mig21", "mig23bn", "mig23", "su22", "su25"
+            };
+            for (int i = 0; i < modelTokens.Length; i++)
+            {
+                string token = modelTokens[i];
+                if (airframe.Contains(token) && loadout.Contains(token))
+                {
+                    return true;
+                }
+            }
+            return false;
         }
         /// <summary>
         /// True when the object (or an ancestor) is a real CAS aircraft: it either carries a
@@ -464,14 +541,6 @@ namespace CustomFireSupport
                 Cache(prefab, loadout, source);
             }
 
-            for (int i = 0; i < templates.Count; i++)
-            {
-                if (ReferenceEquals(templates[i].Prefab, prefab) && ReferenceEquals(templates[i].Loadout, loadout))
-                {
-                    return;
-                }
-            }
-
             string name = string.IsNullOrEmpty(prefab.name) ? "(unnamed airframe)" : prefab.name;
 
             // A mission airframe knows its faction; a prefab found by scanning the loaded assets does not,
@@ -482,6 +551,13 @@ namespace CustomFireSupport
                 effectiveFaction = FireSupportTemplates.ToFaction(CasAirframeCatalog.GuessSide(name));
             }
 
+            AttackKind[] mounted = CollectMountedAttacks(loadout.Loadout);
+            if (HasEquivalentCandidate(templates, name, loadout.name, mounted,
+                                       Count(loadout.Loadout.HardpointPrefabs), AttachCount(manager)))
+            {
+                return;
+            }
+
             templates.Add(new CasTemplate
             {
                 Prefab = prefab,
@@ -490,12 +566,88 @@ namespace CustomFireSupport
                 LoadoutName = string.IsNullOrEmpty(loadout.name) ? "(unnamed loadout)" : loadout.name,
                 Faction = effectiveFaction,
                 AvailableAttacks = FireSupportTemplates.CollectAttackTypes(loadout.Loadout),
-                MountedAttacks = CollectMountedAttacks(loadout.Loadout),
+                MountedAttacks = mounted,
                 HardpointCount = Count(loadout.Loadout.HardpointPrefabs),
                 AttachPointCount = AttachCount(manager),
                 Source = source,
                 IsAsset = isAsset
             });
+        }
+
+        private static bool HasEquivalentCandidate(List<CasTemplate> templates, string prefabName,
+            string loadoutName, AttackKind[] mounted, int hardpointCount, int attachPointCount)
+        {
+            string key = CandidateKey(prefabName, loadoutName, mounted, hardpointCount, attachPointCount);
+            for (int i = 0; i < templates.Count; i++)
+            {
+                CasTemplate existing = templates[i];
+                if (CandidateKey(existing.Name, existing.LoadoutName, existing.MountedAttacks,
+                                 existing.HardpointCount, existing.AttachPointCount) == key)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static string CandidateKey(string prefabName, string loadoutName, AttackKind[] mounted,
+            int hardpointCount, int attachPointCount)
+        {
+            StringBuilder key = new StringBuilder();
+            key.Append(NormalizeIdentity(prefabName)).Append('|')
+               .Append(NormalizeLoadoutIdentity(loadoutName)).Append('|')
+               .Append(hardpointCount).Append('|').Append(attachPointCount).Append('|');
+            if (mounted != null)
+            {
+                for (int i = 0; i < mounted.Length; i++)
+                {
+                    key.Append((int)mounted[i]).Append(',');
+                }
+            }
+            return key.ToString();
+        }
+
+        private static string NormalizeLoadoutIdentity(string value)
+        {
+            return string.IsNullOrEmpty(value) || value == "(unnamed loadout)"
+                ? string.Empty
+                : NormalizeIdentity(value);
+        }
+
+        private static string NormalizeIdentity(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return string.Empty;
+            }
+            value = StripUnityDuplicateSuffix(value);
+            StringBuilder result = new StringBuilder(value.Length);
+            for (int i = 0; i < value.Length; i++)
+            {
+                char c = char.ToLowerInvariant(value[i]);
+                if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))
+                {
+                    result.Append(c);
+                }
+            }
+            return result.ToString();
+        }
+
+        private static string StripUnityDuplicateSuffix(string value)
+        {
+            int open = value.LastIndexOf(" (");
+            if (open < 0 || value[value.Length - 1] != ')')
+            {
+                return value;
+            }
+            for (int i = open + 2; i < value.Length - 1; i++)
+            {
+                if (value[i] < '0' || value[i] > '9')
+                {
+                    return value;
+                }
+            }
+            return value.Substring(0, open);
         }
 
         /// <summary>
@@ -522,9 +674,8 @@ namespace CustomFireSupport
         }
 
         /// <summary>
-        /// Returns only attack types physically mounted by the loadout.  CASAttackMeta is intentionally
-        /// kept separate: GHPC uses it to choose an attack, but CASHardpointManager.CanDoAttackType()
-        /// ultimately checks the instantiated hardpoints, so a metadata-only entry cannot fire.
+        /// Returns only attack types backed by usable physical hardpoints. Metadata-only attack entries
+        /// affect target selection but cannot make CASHardpointManager fire a weapon.
         /// </summary>
         private static AttackKind[] CollectMountedAttacks(CASLoadout loadout)
         {

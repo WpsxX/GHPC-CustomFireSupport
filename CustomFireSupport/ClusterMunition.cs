@@ -411,13 +411,6 @@ namespace CustomFireSupport
     ///
     /// A penetrating submunition does not come here: its jet path does not call Detonate, and it does not
     /// need to - vanilla already throws VISIBLE armour spall behind whatever the jet defeats.
-    ///
-    /// DIRECTION: full sphere, 360 with no dead angle - that is what a real dual-purpose body does when
-    /// its scored steel shell breaks up. The halves that leave downwards simply hit the ground and stop
-    /// (a round that touches terrain is ended right there by the game), so they cost nothing but a couple
-    /// of metres of travel; the halves that leave upwards are the ones that cross the target area. The
-    /// mod never aims them, and it never touches the submunition's own heading - the shaped-charge jet
-    /// that the body's copper liner forms is resolved by the game, vanilla, at impact.
     /// </summary>
     internal static class ClusterFragments
     {
@@ -486,16 +479,10 @@ namespace CustomFireSupport
                 // A little jitter, so no two fragments share a transform - the game raycasts each round from
                 // its own position, and identical ones would look like a single trace.
                 go.transform.position = origin + UnityEngine.Random.insideUnitSphere * 0.15f;
-                // Full sphere - a real dual-purpose body throws its fragments in EVERY direction, with no
-                // dead angle. LiveRound travels along transform.forward, so this rotation IS the departure
-                // direction. The ones that leave downwards are not a problem: any round that touches the
-                // ground is stopped there by the game (penCheck's terrain branch ends it), so they die a
-                // metre or two from the burst instead of ploughing on. The ones that leave upwards are the
-                // ones that cross the target area.
-                go.transform.rotation = UnityEngine.Quaternion.Euler(
-                    UnityEngine.Random.Range(-180f, 180f),
-                    UnityEngine.Random.Range(-180f, 180f),
-                    UnityEngine.Random.Range(-180f, 180f));
+                // An upward cone instead of the game's full sphere: the burst opens over the target, and the
+                // rounds fired straight down only plough into the ground below it. LiveRound travels along
+                // transform.forward, so this rotation IS the departure direction.
+                go.transform.rotation = ConeRotation();
 
                 fragment.Info = ammo;
                 fragment.IsSpall = true;
@@ -515,8 +502,23 @@ namespace CustomFireSupport
                 Log.Verbose("cluster fragments: threw " + thrown + " fragment(s) at " + origin.ToString("0.#") +
                             " (" + ClusterMunitionFactory.HedpMinSpallRha.ToString("0") + "-" +
                             ClusterMunitionFactory.HedpMaxSpallRha.ToString("0") + " mm RHAe each, " +
-                            SpeedMetersPerSecond.ToString("0") + " m/s, all directions).");
+                            SpeedMetersPerSecond.ToString("0") + " m/s, upward " +
+                            ClusterMunitionFactory.HedpFragmentConeDegrees.ToString("0") + " degree cone).");
             }
+        }
+
+        /// <summary>
+        /// One fragment's departure direction: somewhere inside a HedpFragmentConeDegrees cone around
+        /// straight up - world up, not the submunition's own up, because the round dives into its burst
+        /// point and so its local up faces the ground. The tilt stops just short of the vertical because
+        /// LookRotation wants a direction that is not parallel to the up reference it is handed.
+        /// </summary>
+        private static Quaternion ConeRotation()
+        {
+            float tilt = UnityEngine.Random.Range(1f, ClusterMunitionFactory.HedpFragmentConeDegrees * 0.5f);
+            Vector3 direction = Quaternion.AngleAxis(UnityEngine.Random.Range(0f, 360f), Vector3.up) *
+                                (Quaternion.AngleAxis(tilt, Vector3.right) * Vector3.up);
+            return Quaternion.LookRotation(direction, Vector3.up);
         }
 
         /// <summary>
@@ -555,12 +557,6 @@ namespace CustomFireSupport
             // The spall round's descriptor has HasImpactEffect = false, so no impact effect is looked up;
             // -1 keeps the clone from inheriting a stale cache index from the donor.
             fragment.CachedIndex = -1;
-            // "A fragment that touches the ground stops there." The spall round inherits a 25 degree
-            // certain-ricochet angle from the game, which would let a shallow-angle fragment skip off the
-            // dirt and keep going instead. Zero makes the ricochet branch unreachable (it needs
-            // incidence < CertainRicochetAngle), so every ground contact ends the fragment - and it does
-            // not cost anything against armour, where a 1-8 mm fragment was never going to bounce anyway.
-            fragment.CertainRicochetAngle = 0f;
             _fragmentAmmo = fragment;
             return fragment;
         }
