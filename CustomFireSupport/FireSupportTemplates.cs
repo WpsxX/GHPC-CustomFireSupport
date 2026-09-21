@@ -97,6 +97,13 @@ namespace CustomFireSupport
         /// <summary>Attack types the loadout can actually deliver.</summary>
         internal AttackKind[] AvailableAttacks = new AttackKind[0];
 
+        /// <summary>
+        /// Attack types backed by a real CASHardpoint prefab in this loadout.  A loadout can contain a
+        /// CASAttackMeta entry without mounting the corresponding weapon; that entry only affects target
+        /// selection and must not make a bomb/rocket candidate look usable.
+        /// </summary>
+        internal AttackKind[] MountedAttacks = new AttackKind[0];
+
         /// <summary>Where this candidate came from (mission scene / session cache / loaded assets).</summary>
         internal string Source = string.Empty;
 
@@ -110,13 +117,13 @@ namespace CustomFireSupport
 
         internal bool Supports(AttackKind attack)
         {
-            if (AvailableAttacks == null || AvailableAttacks.Length == 0)
+            if (MountedAttacks == null || MountedAttacks.Length == 0)
             {
                 return false;
             }
-            for (int i = 0; i < AvailableAttacks.Length; i++)
+            for (int i = 0; i < MountedAttacks.Length; i++)
             {
-                if (AvailableAttacks[i] == attack)
+                if (MountedAttacks[i] == attack)
                 {
                     return true;
                 }
@@ -135,6 +142,24 @@ namespace CustomFireSupport
     /// </summary>
     internal static class FireSupportTemplates
     {
+        /// <summary>
+        /// A hardpoint is usable only when its ammo codex, projectile visual and stored capacity are
+        /// present. Some exported CAS prefabs retain a type/attack entry after their ammo asset was
+        /// stripped; accepting those entries makes the aircraft fly a pass with nothing to launch.
+        /// </summary>
+        internal static bool IsUsableHardpoint(CASHardpoint hardpoint)
+        {
+            try
+            {
+                return hardpoint != null && hardpoint.Ammo != null &&
+                       hardpoint.Ammo.ShotVisual != null && hardpoint.TotalMunitionsCapacity > 0;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
         /// <summary>All shell candidates per shell type, best source first (scene batteries, then loaded codex assets).</summary>
         internal static Dictionary<MunitionKind, List<AmmoTemplate>> HarvestAmmo(FireMissionManager manager, Faction playerFaction)
         {

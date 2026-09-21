@@ -490,6 +490,7 @@ namespace CustomFireSupport
                 LoadoutName = string.IsNullOrEmpty(loadout.name) ? "(unnamed loadout)" : loadout.name,
                 Faction = effectiveFaction,
                 AvailableAttacks = FireSupportTemplates.CollectAttackTypes(loadout.Loadout),
+                MountedAttacks = CollectMountedAttacks(loadout.Loadout),
                 HardpointCount = Count(loadout.Loadout.HardpointPrefabs),
                 AttachPointCount = AttachCount(manager),
                 Source = source,
@@ -518,6 +519,39 @@ namespace CustomFireSupport
             int prefabs = loadout.HardpointPrefabs.Length;
             int attachPoints = manager.HardpointAttachPoints.Length;
             return prefabs == 1 || prefabs >= attachPoints;
+        }
+
+        /// <summary>
+        /// Returns only attack types physically mounted by the loadout.  CASAttackMeta is intentionally
+        /// kept separate: GHPC uses it to choose an attack, but CASHardpointManager.CanDoAttackType()
+        /// ultimately checks the instantiated hardpoints, so a metadata-only entry cannot fire.
+        /// </summary>
+        private static AttackKind[] CollectMountedAttacks(CASLoadout loadout)
+        {
+            List<AttackKind> mounted = new List<AttackKind>();
+            if (loadout == null || loadout.HardpointPrefabs == null)
+            {
+                return mounted.ToArray();
+            }
+
+            for (int i = 0; i < loadout.HardpointPrefabs.Length; i++)
+            {
+                GameObject prefab = loadout.HardpointPrefabs[i];
+                CASHardpoint hardpoint = prefab == null
+                    ? null
+                    : prefab.GetComponentInChildren<CASHardpoint>(true);
+                if (!FireSupportTemplates.IsUsableHardpoint(hardpoint))
+                {
+                    continue;
+                }
+
+                AttackKind kind;
+                if (FireSupportTemplates.TryFromGameAttack(hardpoint.Type, out kind) && !mounted.Contains(kind))
+                {
+                    mounted.Add(kind);
+                }
+            }
+            return mounted.ToArray();
         }
 
         private static int Count(GameObject[] array)

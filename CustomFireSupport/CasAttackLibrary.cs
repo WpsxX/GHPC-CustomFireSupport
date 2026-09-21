@@ -202,7 +202,7 @@ namespace CustomFireSupport
                     continue;
                 }
                 CASHardpoint hardpoint = prefab.GetComponentInChildren<CASHardpoint>(true);
-                if (hardpoint == null)
+                if (!FireSupportTemplates.IsUsableHardpoint(hardpoint))
                 {
                     continue;
                 }

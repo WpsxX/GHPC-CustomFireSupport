@@ -356,6 +356,17 @@ namespace CustomFireSupport
                 ? BuildAttacksForKinds(requestedKinds, template)
                 : FilterAttacks(config, template);
 
+            // Filtering CASAttackMeta alone is not enough. GHPC chooses the final attack from the
+            // mounted hardpoints, so a Rockets-only slot that still carries the template's Bombs
+            // pylons can select Bombs for a soft target even though its Bombs metadata was removed;
+            // GetAttackMetaByType then returns null and the aircraft flies the pass without firing.
+            // Restrict the physical payload to the explicitly requested types as well. A single
+            // matching prefab is reused on every pylon, which is always a valid GHPC loadout.
+            if (config.AttackTypes != null && config.AttackTypes.Length > 0)
+            {
+                hardpoints = RestrictHardpoints(hardpoints, config.AttackTypes, template.AttachPointCount);
+            }
+
             // Final guarantee that the airframe can actually be configured. CASHardpointManager
             // .HasCriticalConfigError() rejects a HardpointPrefabs list that is neither a single entry
             // nor one entry per attach point; DoConfig() then returns before SetUpHardpoints(), so
@@ -601,6 +612,65 @@ namespace CustomFireSupport
             return attachPoints > 0 && hardpoints.Length >= attachPoints;
         }
 
+        /// <summary>
+        /// Keeps the mounted hardpoints in lockstep with an explicit CasAttackTypes filter. The game
+        /// does not use CASAttackMeta as the source of CanDoAttackType(); it inspects the instantiated
+        /// hardpoints, so leaving an unrequested Bombs/Rockets prefab here reintroduces the attack type.
+        /// </summary>
+        private static GameObject[] RestrictHardpoints(GameObject[] source, AttackKind[] requested,
+            int attachPoints)
+        {
+            if (source == null || source.Length == 0 || requested == null || requested.Length == 0)
+            {
+                return source;
+            }
+
+            List<GameObject> matching = new List<GameObject>();
+            for (int i = 0; i < source.Length; i++)
+            {
+                GameObject prefab = source[i];
+                CASHardpoint hardpoint = prefab == null
+                    ? null
+                    : prefab.GetComponentInChildren<CASHardpoint>(true);
+                if (!FireSupportTemplates.IsUsableHardpoint(hardpoint))
+                {
+                    continue;
+                }
+
+                AttackKind kind;
+                if (!FireSupportTemplates.TryFromGameAttack(hardpoint.Type, out kind))
+                {
+                    continue;
+                }
+                for (int r = 0; r < requested.Length; r++)
+                {
+                    if (requested[r] == kind)
+                    {
+                        matching.Add(prefab);
+                        break;
+                    }
+                }
+            }
+
+            if (matching.Count == 0)
+            {
+                return source;
+            }
+
+            if (requested.Length == 1 || matching.Count == 1)
+            {
+                return new[] { matching[0] };
+            }
+
+            int count = attachPoints > 0 ? attachPoints : matching.Count;
+            GameObject[] result = new GameObject[count];
+            for (int i = 0; i < result.Length; i++)
+            {
+                result[i] = matching[i % matching.Count];
+            }
+            return result;
+        }
+
         private static GameObject FirstHardpoint(GameObject[] hardpoints)
         {
             if (hardpoints == null)
@@ -625,7 +695,7 @@ namespace CustomFireSupport
         private static bool TryKindOfHardpoint(GameObject prefab, out AttackKind kind)
         {
             CASHardpoint hardpoint = prefab != null ? prefab.GetComponentInChildren<CASHardpoint>(true) : null;
-            if (hardpoint == null)
+            if (!FireSupportTemplates.IsUsableHardpoint(hardpoint))
             {
                 kind = AttackKind.Bombs;
                 return false;
@@ -650,7 +720,7 @@ namespace CustomFireSupport
                     continue;
                 }
                 CASHardpoint hardpoint = prefab.GetComponentInChildren<CASHardpoint>(true);
-                if (hardpoint != null && hardpoint.Type == type)
+                if (FireSupportTemplates.IsUsableHardpoint(hardpoint) && hardpoint.Type == type)
                 {
                     return prefab;
                 }
@@ -745,7 +815,7 @@ namespace CustomFireSupport
 
             if (config.AttackTypes == null || config.AttackTypes.Length == 0)
             {
-                return DeepCopySupported(source);
+                return DeepCopySupported(source, template);
             }
 
             List<CASAttackMeta> kept = new List<CASAttackMeta>();
@@ -790,7 +860,7 @@ namespace CustomFireSupport
             {
                 Log.Warn("slot " + config.Index + ": none of the requested CasAttackTypes are carried by template '" + template.Name +
                          "'; using every attack the template has instead.");
-                CASAttackMeta[] all = DeepCopySupported(source);
+                CASAttackMeta[] all = DeepCopySupported(source, template);
                 if (all.Length > 0)
                 {
                     return all;
@@ -840,13 +910,14 @@ namespace CustomFireSupport
         /// but never an attack type the mod no longer offers (air-to-air missile, training round), so the
         /// default CasAttackTypes = "Any" cannot smuggle one back onto the sortie.
         /// </summary>
-        private static CASAttackMeta[] DeepCopySupported(CASAttackMeta[] source)
+        private static CASAttackMeta[] DeepCopySupported(CASAttackMeta[] source, CasTemplate template)
         {
             List<CASAttackMeta> copies = new List<CASAttackMeta>(source.Length);
             for (int i = 0; i < source.Length; i++)
             {
                 AttackKind kind;
-                if (source[i] != null && FireSupportTemplates.TryFromGameAttack(source[i].UniqueType, out kind))
+                if (source[i] != null && FireSupportTemplates.TryFromGameAttack(source[i].UniqueType, out kind) &&
+                    (template == null || template.Supports(kind)))
                 {
                     copies.Add(source[i].DeepCopy());
                 }
