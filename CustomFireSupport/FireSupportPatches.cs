@@ -140,6 +140,19 @@ namespace CustomFireSupport
             private static void Prefix()
             {
                 CustomSupportRegistry.BeginPlayerCasCall();
+
+                // Reports a doubled dispatch only. This used to also BLOCK the second invocation, but
+                // that broke CAS outright: MapClick invokes TryCallCAS for every map click whatever the
+                // map mode, vanilla early-returns from the ones that are not CAS calls, and a per-click
+                // gate could not tell those apart from the real dispatch - so it suppressed the real one
+                // and the panel stopped responding. The duplicate is reported, never blocked.
+                int invocations = CasCallReadinessRepair.NoteTryCallCas();
+                if (invocations > 1)
+                {
+                    Log.Warn("CAS call: MapController.TryCallCAS ran " + invocations + " times for one map " +
+                             "click (frame " + Time.frameCount + "). Each run re-rolls the airframe and " +
+                             "consumes its readiness, so only one of them can send an aircraft.");
+                }
             }
 
             private static void Postfix()
@@ -208,15 +221,10 @@ namespace CustomFireSupport
 
                     casIndex = index;
 
-                    CasSlot selectedSlot;
-                    if (CustomSupportRegistry.TryGetCasSlot(airframe, out selectedSlot) && selectedSlot != null &&
-                        selectedSlot.Config != null)
-                    {
-                        string readinessReason;
-                        CasCallReadinessRepair.EnsureReadyForCall(airframe, selectedSlot.Config.Index,
-                            selectedSlot.Config.Missions, selectedSlot.Config.CooldownSeconds,
-                            out readinessReason);
-                    }
+                    // Bomb / rocket slots fly a different airframe with a different loadout each call
+                    // (gun runs keep their designated airframe). The re-roll mutates this very airframe
+                    // object, so the panel button, the manager's array and this call all stay in sync.
+                    CustomSupportRegistry.TryRerollAirframeForCall(unitFaction, airframe);
 
                     // Vanilla instantiates the prefab and immediately does GetComponent<CASController>()
                     // on the clone. A donor whose controller is not on its own root would throw there
@@ -238,6 +246,21 @@ namespace CustomFireSupport
                                   "; the call was cancelled. This donor should have been resolved to the aircraft root.");
                         __result = MapMissionResult.Empty;
                         return false;
+                    }
+
+                    // The game's own gate is "array[casIndex].IsReady", and when it refuses, the call
+                    // returns MapMissionResult.Empty and NO AIRCRAFT IS SENT AT ALL. IsReady is
+                    // "_missionsAvailable > 0 && RemainingCooldown <= 0", and the game lowers both on its
+                    // own (ReduceMissionsAvailable on every send, ResetCooldown to the 120 s RechargeTime
+                    // when a sortie returns). Make the airframe ready through those same fields when the
+                    // slot's configuration says it should be, instead of bypassing the gate - the bypass
+                    // also skips the game's mission bookkeeping, which is what broke the earlier attempt.
+                    CasSlot calledSlot;
+                    if (CustomSupportRegistry.TryGetCasSlot(airframe, out calledSlot) && calledSlot.Config != null)
+                    {
+                        string readiness;
+                        CasCallReadinessRepair.EnsureReadyForCall(airframe, calledSlot.Config.Index,
+                            calledSlot.Config.Missions, calledSlot.Config.CooldownSeconds, out readiness);
                     }
 
                     Log.Verbose("CAS call routed to custom airframe index " + index + ".");
@@ -515,6 +538,131 @@ namespace CustomFireSupport
         /// before the vanilla lookup runs; if it is genuinely absent, the hierarchy is dumped once so
         /// the donor can be fixed instead of guessed at.
         /// </summary>
+        /// <summary>
+        /// DIAGNOSTIC ONLY - changes no behaviour.
+        ///
+        /// Reports whether a summoned aircraft actually reaches CASController.Start(), and what the
+        /// game's own comms gate would decide there. Start() is the point the game prints
+        /// "Searching for targets" to the HUD, so a summon that never reaches this Prefix is a summon
+        /// the player never sees - which is the difference between "no aircraft was generated" and
+        /// "an aircraft exists but never began its sortie".
+        ///
+        /// It also dumps the two things that can abort Start() before that message:
+        ///   * no Rigidbody on the root (vanilla does GetComponent&lt;Rigidbody&gt;() with no check), and
+        ///   * a CASHardpointManager whose DoBallisticsCache would iterate a null _hardpoints list
+        ///     (CASHardpointManager.DoBallisticsCache is called from Start() before the HUD message).
+        /// </summary>
+        [HarmonyPatch(typeof(CASController), "Start")]
+        internal static class CasStartProbePatch
+        {
+            private static void Prefix(CASController __instance)
+            {
+                try
+                {
+                    if (__instance == null)
+                    {
+                        return;
+                    }
+
+                    GameObject root = __instance.gameObject;
+                    Rigidbody rb = root.GetComponent<Rigidbody>();
+                    CASHardpointManager manager = root.GetComponentInChildren<CASHardpointManager>(true);
+
+                    bool ours = CasFireChainRepair.IsOurSortie(__instance);
+                    Log.Info("CAS start probe: '" + root.name + "' reached CASController.Start()" +
+                             " (ours=" + ours +
+                             ", activeInHierarchy=" + root.activeInHierarchy +
+                             ", hasRigidbody=" + (rb != null) +
+                             ", hasManager=" + (manager != null) +
+                             ", isAlive=" + root.activeSelf + ").");
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("CAS start probe failed: " + ex);
+                }
+            }
+        }
+
+        /// <summary>
+        /// DIAGNOSTIC ONLY - changes no behaviour.
+        ///
+        /// CASHardpointManager.DoBallisticsCache() is called from CASController.Start() BEFORE the game
+        /// prints "Searching for targets", and it iterates the private _hardpoints list with no null
+        /// guard. If SetLoadout never ran DoConfig (manager not found, or the loadout was refused), that
+        /// list is still null and Start() throws there - the aircraft exists but never begins its sortie.
+        /// This reports the list's state so that failure is visible instead of silent.
+        /// </summary>
+        [HarmonyPatch(typeof(CASHardpointManager), "DoBallisticsCache")]
+        internal static class CasBallisticsCacheProbePatch
+        {
+            private static readonly AccessTools.FieldRef<CASHardpointManager, List<CASHardpoint>> HardpointsRef =
+                AccessTools.FieldRefAccess<CASHardpointManager, List<CASHardpoint>>("_hardpoints");
+
+            private static void Prefix(CASHardpointManager __instance)
+            {
+                try
+                {
+                    if (__instance == null)
+                    {
+                        return;
+                    }
+
+                    List<CASHardpoint> hardpoints = HardpointsRef == null ? null : HardpointsRef(__instance);
+                    if (hardpoints == null)
+                    {
+                        Log.Warn("CAS ballistics probe: '" + __instance.gameObject.name + "' has a NULL " +
+                                 "_hardpoints list when CASController.Start() calls DoBallisticsCache - " +
+                                 "the vanilla foreach will throw here and this aircraft will never begin " +
+                                 "its sortie. Its SetLoadout never reached DoConfig (no CASHardpointManager " +
+                                 "found by the vanilla active-only lookup, or the loadout was refused).");
+                    }
+                    else
+                    {
+                        Log.Verbose("CAS ballistics probe: '" + __instance.gameObject.name + "' has " +
+                                    hardpoints.Count + " configured hardpoint(s).");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("CAS ballistics probe failed: " + ex);
+                }
+            }
+        }
+
+        /// <summary>
+        /// DIAGNOSTIC ONLY - changes no behaviour.
+        ///
+        /// Records the airframe + loadout every successful CasSupportManager call reports, so a doubled
+        /// map click can be told apart from a single one in the log and the two clones of one click can
+        /// be compared.
+        /// </summary>
+        [HarmonyPatch(typeof(CasSupportManager), "SendCasSupport")]
+        internal static class CasSpawnProbePatch
+        {
+            private static void Postfix(ref MapMissionResult __result)
+            {
+                try
+                {
+                    if (!__result.IsSuccess)
+                    {
+                        Log.Warn("CAS spawn probe: the call returned no aircraft (REFUSED) - nothing was instantiated.");
+                        return;
+                    }
+
+                    CasAirframeUnit unit = __result.SupportInfo as CasAirframeUnit;
+                    Log.Info("CAS spawn probe: call succeeded, airframe='" +
+                             (unit == null || unit.airframePrefab == null ? "?" : unit.airframePrefab.name) +
+                             "', loadout='" +
+                             (unit == null || unit.Loadout == null ? "?" : unit.Loadout.name) +
+                             "', IsReady=" + (unit != null && unit.IsReady) + ".");
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("CAS spawn probe failed: " + ex);
+                }
+            }
+        }
+
         [HarmonyPatch(typeof(CASController), "SetLoadout")]
         internal static class CasSetLoadoutManagerPatch
         {
@@ -561,6 +709,12 @@ namespace CustomFireSupport
                             t = t.parent;
                         }
                         Log.Verbose("CAS SetLoadout: activated hardpoint manager chain on '" + __instance.name + "'.");
+
+                        // DoConfig() runs inside the vanilla method, right after this, and it refuses the
+                        // whole loadout - leaving the aircraft unable to fire for its entire sortie - when
+                        // the hardpoint prefab list is neither a single entry nor one entry per attach
+                        // point. Repair that here, while it is still possible (see CasFireChainRepair).
+                        CasFireChainRepair.EnsureLoadoutConfigurable(manager, loadout);
                         return;
                     }
 
@@ -597,6 +751,24 @@ namespace CustomFireSupport
                 for (int i = 0; i < t.childCount; i++)
                 {
                     AppendNode(builder, t.GetChild(i), depth + 1);
+                }
+            }
+
+            /// <summary>
+            /// After DoConfig has run: one line saying exactly what this sortie can fire, and a warning
+            /// naming the reason when it can fire nothing at all. This is the diagnostic that has been
+            /// missing - without it, "the plane came and dropped nothing" reports are unfalsifiable,
+            /// because every message the game itself prints goes to a log the player never sees.
+            /// </summary>
+            private static void Postfix(CASController __instance, CASLoadoutScriptable loadout)
+            {
+                try
+                {
+                    CasFireChainRepair.AuditSortie(__instance, loadout);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("CAS SetLoadout audit failed: " + ex);
                 }
             }
         }
@@ -706,6 +878,8 @@ namespace CustomFireSupport
 
             private static readonly MethodInfo GetTargetVelocityMethod =
                 AccessTools.Method(typeof(CASController), "GetTargetVelocity", Type.EmptyTypes);
+            private static readonly Func<CASController, Vector3> GetTargetVelocity =
+                CachedDelegate.Create<Func<CASController, Vector3>>(GetTargetVelocityMethod);
 
             private static void Postfix(CASController __instance, ref Vector3 __result)
             {
@@ -764,7 +938,11 @@ namespace CustomFireSupport
                     Vector3 targetVelocity = Vector3.zero;
                     try
                     {
-                        if (GetTargetVelocityMethod != null)
+                        if (GetTargetVelocity != null)
+                        {
+                            targetVelocity = GetTargetVelocity(__instance);
+                        }
+                        else if (GetTargetVelocityMethod != null)
                         {
                             targetVelocity = (Vector3)GetTargetVelocityMethod.Invoke(__instance, null);
                         }
@@ -1015,6 +1193,15 @@ namespace CustomFireSupport
                 AccessTools.FieldRefAccess<CASHardpointManager, bool>("_busyFiring");
             private static readonly MethodInfo FireMetaMethod =
                 AccessTools.Method(typeof(CASHardpointManager), "Fire", new[] { typeof(CASAttackMeta) });
+
+            /// <summary>
+            /// The same private method as an open delegate. A burst pulls the trigger once per round -
+            /// 140 times for a gun run - and MethodInfo.Invoke boxes an argument array every time; on the
+            /// frame the burst starts that is exactly the kind of per-round cost that shows up as a
+            /// stutter while the gun fires.
+            /// </summary>
+            private static readonly Action<CASHardpointManager, CASAttackMeta> FireMeta =
+                CachedDelegate.Create<Action<CASHardpointManager, CASAttackMeta>>(FireMetaMethod);
             private static readonly HashSet<int> _burstLogged = new HashSet<int>();
 
             /// <summary>How long after the last round we keep collecting impacts for the hit report.</summary>
@@ -1050,11 +1237,33 @@ namespace CustomFireSupport
 
             private static bool Prefix(CASHardpointManager __instance, CASAttackMeta meta, ref IEnumerator __result)
             {
-                if (__instance == null || !CasPayloadFactory.IsOurGunMeta(meta))
+                // Every attack of one of our sorties, not just the gun run: the vanilla MultiFire leaves
+                // _busyFiring true for good when its coroutine is interrupted (the aircraft leaving at the
+                // end of a pass is enough), and every later attack on that manager is then refused - the
+                // "the plane came back and dropped nothing the second time" report. This replacement
+                // always clears the flag, and releases at the authored rate instead of at the frame rate.
+                if (__instance == null || meta == null ||
+                    !CasFireChainRepair.IsOurSortie(__instance.GetComponentInParent<CASController>()))
                 {
                     return true; // vanilla / enemy aircraft: keep the game's own coroutine.
                 }
-                __result = Burst(__instance, meta);
+
+                // A gun run whose attack entry lost its burst fires ONE round and is over - the "the gun
+                // run only shoots 1 bullet" report. CASHardpointManager.Fire only reaches MultiFire when
+                // TriggerPulls > 1, so a rebuilt entry carrying the default 1 means a single trigger pull.
+                // The unified gun's own belt is the authority for our gun, so restore it before the burst
+                // starts (this has to live here, not in the iterator: an iterator body is compiled into a
+                // generated state machine, out of reach of a static call-graph check).
+                if (meta.UniqueType == CASAttackType.GunRun && meta.TriggerPulls < 2)
+                {
+                    int before = meta.TriggerPulls;
+                    CasPayloadFactory.ApplyGunRateOfFire(meta);
+                    Log.Warn("CAS gun burst: the gun run's attack entry carried TriggerPulls=" + before +
+                             ", which releases a single round and then ends the burst; restored the unified " +
+                             "gun's " + meta.TriggerPulls + "-round belt.");
+                }
+
+                __result = Burst(__instance, meta, CasGunAudio.AirframeNameOf(__instance));
                 return false;
             }
 
@@ -1068,7 +1277,7 @@ namespace CustomFireSupport
                 }
             }
 
-            private static IEnumerator Burst(CASHardpointManager manager, CASAttackMeta meta)
+            private static IEnumerator Burst(CASHardpointManager manager, CASAttackMeta meta, string gunAirframeName)
             {
                 BusyRef(manager) = true;
 
@@ -1099,9 +1308,14 @@ namespace CustomFireSupport
                     _report = report;
                 }
 
-                // Sustained gun sound for the whole burst: at strafing distance the per-round one-shots
-                // alone are a thin, barely audible crackle, so the burst also drives the hardpoint's
-                // StudioEventEmitter (see CasPayloadFactory.AttachGunAudio).
+                // Sustained gun sound for the whole burst.
+                //
+                // The mod's OWN recordings are used here (see CasGunAudio): a GAU-8 set with separate
+                // close / mid / far takes and a GSh-30 loop + stop tail, played from an AudioSource with
+                // an inverse-square fade. The game's FMOD emitter stays as the fallback for when the
+                // sound bundle is not installed, so a missing bundle degrades to the old behaviour
+                // instead of a silent strafe.
+                CasGunAudio.Handle gunSound = null;
                 StudioEventEmitter gunAudio = null;
                 bool audioStopped = false;
                 bool busyCleared = false;
@@ -1109,15 +1323,33 @@ namespace CustomFireSupport
                 {
                     try
                     {
-                        gunAudio = CasPayloadFactory.FindGunEmitter(meta);
-                        if (gunAudio != null)
+                        // The emitter hangs off the runtime gun hardpoint, so it travels with the
+                        // aircraft and its distance to the player is the distance the sound fades over.
+                        StudioEventEmitter anchor = CasPayloadFactory.FindGunEmitter(meta);
+                        if (anchor != null)
                         {
-                            gunAudio.Play();
+                            gunSound = CasGunAudio.Begin(anchor.transform, gunAirframeName);
                         }
                     }
                     catch (Exception ex)
                     {
-                        Log.Error("CAS gun audio: could not start the sustained fire event: " + ex);
+                        Log.Error("CAS gun audio: could not start the custom burst sound: " + ex);
+                    }
+
+                    if (gunSound == null)
+                    {
+                        try
+                        {
+                            gunAudio = CasPayloadFactory.FindGunEmitter(meta);
+                            if (gunAudio != null)
+                            {
+                                gunAudio.Play();
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Log.Error("CAS gun audio: could not start the sustained fire event: " + ex);
+                        }
                     }
 
                     int total = Mathf.Max(1, meta.TriggerPulls);
@@ -1130,20 +1362,31 @@ namespace CustomFireSupport
                     {
                         while (fired < total && elapsed + 1e-5f >= nextShotAt)
                         {
-                            if (FireMetaMethod != null)
+                            if (FireMeta != null)
+                            {
+                                FireMeta(manager, meta);
+                            }
+                            else if (FireMetaMethod != null)
                             {
                                 FireMetaMethod.Invoke(manager, new object[] { meta });
                             }
                             fired++;
                             nextShotAt += interval;
                         }
+                        // Fade with the distance and pick up a range change while the burst runs.
+                        CasGunAudio.Update(gunSound);
                         yield return null;
                         elapsed += Time.deltaTime;
                     }
 
-                    // The burst is over: stop the sound and free the manager now, then keep collecting
+                    // The burst is over: end the sound and free the manager now, then keep collecting
                     // impacts for the hit report (the last rounds are still in flight).
-                    if (gunAudio != null)
+                    if (gunSound != null)
+                    {
+                        CasGunAudio.End(gunSound);   // plays the GSh-30 falling-off tail
+                        audioStopped = true;
+                    }
+                    else if (gunAudio != null)
                     {
                         try
                         {
@@ -1703,7 +1946,14 @@ namespace CustomFireSupport
                     // the mission is guaranteed to be fully loaded (see CasMissileVisualRepair).
                     if (CasPayloadFactory.IsOurMissile(__instance.Info))
                     {
-                        CasMissileVisualRepair.Apply(__instance.gameObject);
+                        CasMissileVisualRepair.ApplyMissileVisual(__instance.gameObject);
+                    }
+                    else if (CasPrewarmer.IsBundledAmmo(__instance.Info))
+                    {
+                        // The bundle's own rocket rounds (FFAR / S-5K / S-8K, and the bombs): their flight
+                        // visual hangs off the AmmoType, two references away from the hardpoint prefab, so
+                        // it is the same class of asset as the missile's and gets the same safety net.
+                        CasMissileVisualRepair.ApplyRoundVisual(__instance.gameObject, __instance.Info);
                     }
 
                     if (!ours)
@@ -1795,9 +2045,19 @@ namespace CustomFireSupport
                 AccessTools.Method(typeof(CASController), "EnterState");
             private static readonly MethodInfo GetIdealAttackTypeMethod =
                 AccessTools.Method(typeof(CASController), "GetIdealAttackType");
+            private static readonly Func<CASController, Unit, CASAttackType> GetIdealAttackType =
+                CachedDelegate.Create<Func<CASController, Unit, CASAttackType>>(GetIdealAttackTypeMethod);
+            private static readonly object TurnTowardTarget = ResolveTurnState();
 
             /// <summary>Target -> the plane currently attacking it.</summary>
             private static readonly Dictionary<Unit, CASController> Claims = new Dictionary<Unit, CASController>();
+            private static readonly List<Unit> ReleasedClaims = new List<Unit>();
+
+            internal static void ResetForScene()
+            {
+                Claims.Clear();
+                ReleasedClaims.Clear();
+            }
 
             private static void Postfix(CASController __instance)
             {
@@ -1808,14 +2068,13 @@ namespace CustomFireSupport
                         return;
                     }
 
+                    // Release this plane's previous claim even when it lost its current target.
+                    PruneClaims(__instance);
                     Unit chosen = __instance.FinalTarget;
                     if (chosen == null)
                     {
                         return;
                     }
-
-                    PruneStaleClaims();
-                    ReleasePlaneClaims(__instance);
 
                     Unit result = chosen;
                     if (IsClaimedByOther(chosen, __instance))
@@ -1860,7 +2119,7 @@ namespace CustomFireSupport
                 Vector3 interest = InterestRef(plane);
 
                 // 1) The plane's own spotted list (vanilla already filtered visibility + attackability).
-                Unit best = FindNearest(plane, SpottedRef(plane), interest, exclude, float.MaxValue);
+                Unit best = FindNearest(plane, SpottedRef(plane), interest, exclude);
                 if (best != null)
                 {
                     return best;
@@ -1874,7 +2133,7 @@ namespace CustomFireSupport
                 }
 
                 Unit wideBest = null;
-                float wideBestDistance = WideSearchRadius;
+                float wideBestDistanceSquared = WideSearchRadius * WideSearchRadius;
                 for (int f = 0; f < allUnits.Length; f++)
                 {
                     Faction faction = (Faction)f;
@@ -1898,23 +2157,23 @@ namespace CustomFireSupport
                         {
                             continue;
                         }
+                        Transform center = candidate.Center;
+                        if (center == null) continue;
+                        float distanceSquared = (center.position - interest).sqrMagnitude;
+                        if (!(distanceSquared < wideBestDistanceSquared)) continue;
                         if (!CanPlaneAttack(plane, candidate))
                         {
                             continue; // no weapon for it - vanilla would end the run instead.
                         }
 
-                        float distance = Vector3.Distance(candidate.Center.position, interest);
-                        if (distance < wideBestDistance)
-                        {
-                            wideBestDistance = distance;
-                            wideBest = candidate;
-                        }
+                        wideBestDistanceSquared = distanceSquared;
+                        wideBest = candidate;
                     }
                 }
                 return wideBest;
             }
 
-            private static Unit FindNearest(CASController plane, List<Unit> candidates, Vector3 interest, Unit exclude, float maxDistance)
+            private static Unit FindNearest(CASController plane, List<Unit> candidates, Vector3 interest, Unit exclude)
             {
                 if (candidates == null || candidates.Count == 0)
                 {
@@ -1922,7 +2181,7 @@ namespace CustomFireSupport
                 }
 
                 Unit best = null;
-                float bestDistance = maxDistance;
+                float bestDistanceSquared = float.PositiveInfinity;
                 for (int i = 0; i < candidates.Count; i++)
                 {
                     Unit candidate = candidates[i];
@@ -1935,10 +2194,12 @@ namespace CustomFireSupport
                         continue;
                     }
 
-                    float distance = Vector3.Distance(candidate.Center.position, interest);
-                    if (distance < bestDistance)
+                    Transform center = candidate.Center;
+                    if (center == null) continue;
+                    float distanceSquared = (center.position - interest).sqrMagnitude;
+                    if (distanceSquared < bestDistanceSquared)
                     {
-                        bestDistance = distance;
+                        bestDistanceSquared = distanceSquared;
                         best = candidate;
                     }
                 }
@@ -1953,6 +2214,8 @@ namespace CustomFireSupport
                 }
                 try
                 {
+                    if (GetIdealAttackType != null)
+                        return GetIdealAttackType(plane, unit) != CASAttackType.Inert;
                     object result = GetIdealAttackTypeMethod.Invoke(plane, new object[] { unit });
                     // CASAttackType.Inert is GHPC's own "this aircraft has no weapon for that target"
                     // sentinel, so a plane that answers Inert is skipped as a candidate. It is not the
@@ -1968,19 +2231,13 @@ namespace CustomFireSupport
 
             private static void RecomputeAttackParams(CASController plane)
             {
-                if (EnterStateMethod == null)
+                if (EnterStateMethod == null || TurnTowardTarget == null)
                 {
                     return;
                 }
                 try
                 {
-                    ParameterInfo[] parameters = EnterStateMethod.GetParameters();
-                    if (parameters.Length != 1)
-                    {
-                        return;
-                    }
-                    object state = Enum.Parse(parameters[0].ParameterType, "TurnTowardTarget");
-                    EnterStateMethod.Invoke(plane, new object[] { state });
+                    EnterStateMethod.Invoke(plane, new object[] { TurnTowardTarget });
                 }
                 catch (Exception ex)
                 {
@@ -1988,52 +2245,32 @@ namespace CustomFireSupport
                 }
             }
 
-            private static void ReleasePlaneClaims(CASController plane)
+            private static object ResolveTurnState()
             {
-                List<Unit> release = null;
-                foreach (KeyValuePair<Unit, CASController> pair in Claims)
+                try
                 {
-                    if (pair.Value == plane)
-                    {
-                        if (release == null)
-                        {
-                            release = new List<Unit>();
-                        }
-                        release.Add(pair.Key);
-                    }
+                    if (EnterStateMethod == null) return null;
+                    ParameterInfo[] parameters = EnterStateMethod.GetParameters();
+                    return parameters.Length == 1
+                        ? Enum.Parse(parameters[0].ParameterType, "TurnTowardTarget") : null;
                 }
-                if (release != null)
-                {
-                    for (int i = 0; i < release.Count; i++)
-                    {
-                        Claims.Remove(release[i]);
-                    }
-                }
+                catch { return null; }
             }
 
-            private static void PruneStaleClaims()
+            private static void PruneClaims(CASController searchingPlane)
             {
-                List<Unit> stale = null;
+                ReleasedClaims.Clear();
                 foreach (KeyValuePair<Unit, CASController> pair in Claims)
                 {
                     Unit target = pair.Key;
                     CASController plane = pair.Value;
-                    if (target == null || plane == null || plane.FinalTarget != target)
+                    if (target == null || plane == null || plane == searchingPlane || plane.FinalTarget != target)
                     {
-                        if (stale == null)
-                        {
-                            stale = new List<Unit>();
-                        }
-                        stale.Add(target);
+                        ReleasedClaims.Add(target);
                     }
                 }
-                if (stale != null)
-                {
-                    for (int i = 0; i < stale.Count; i++)
-                    {
-                        Claims.Remove(stale[i]);
-                    }
-                }
+                for (int i = 0; i < ReleasedClaims.Count; i++) Claims.Remove(ReleasedClaims[i]);
+                ReleasedClaims.Clear();
             }
         }
     }

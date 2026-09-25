@@ -10,17 +10,21 @@
 
 </div>
 
-> 适用游戏：**Gunner, HEAT, PC!**（MelonLoader mod）>   
-> 依赖：MelonLoader 0.6.x + Harmony（随 MelonLoader 附带）>   
-> 版本：**v1.0.1**
+> 适用游戏：**Gunner, HEAT, PC!**（MelonLoader mod）
+>   
+> 依赖：MelonLoader 0.6.x + Harmony（随 MelonLoader 附带）
+>   
+> 版本：**v1.0.3**
 
-本 mod 在任务地图的「火力支援」面板上提供 **6 个可自定义槽位**。  
+本 mod 在任务地图的「火力支援」面板上提供 **6 个可自定义槽位**。
+  
 所有行为都由 `Bin\UserData\MelonPreferences.cfg` 里的 `[CustomFireSupport]` 段决定 —— **不用改代码、不用重编译**。
 
 本文只写**玩家自己能设置的东西**：每一项的含义与可取值。
 
-火力支援的思路源自 [GHPC Artillery Rework](https://github.com/QwertyRyo/GHPC_Artillery_Rework)（QwertyRyo）  
-—— 见 [许可证与致谢](#6-许可证与致谢)。
+火力支援的思路源自 [GHPC Artillery Rework](https://github.com/QwertyRyo/GHPC_Artillery_Rework)（QwertyRyo）
+  
+—— 见 [许可证与致谢](#7-许可证与致谢)。
 
 ## 默认布局（6 个槽位默认全部开启）
 
@@ -39,19 +43,26 @@
 
 ## 0. 安装与生效
 
-1. 到本仓库的 **Releases** 页面下载最新版压缩包 `CustomFireSupport-v1.0.1.zip`。
+1. 到本仓库的 **Releases** 页面下载最新版压缩包 `CustomFireSupport-v1.0.3.zip`。
 2. 把压缩包里的 `CustomFireSupport.dll` 复制到 `<游戏目录>\Bin\Mods\`。
-3. 把压缩包里的 `cas_assets` 复制到同一个目录 `<游戏目录>\Bin\Mods\`（**必须与 DLL 同目录**）。     
-   它是随 mod 发布的资产包，装着 CAS 机型、挂载、硬点与烟幕/照明抛射物；装了才能保证每一关都能用上     
+3. 把压缩包里的 `cas_assets` 复制到同一个目录 `<游戏目录>\Bin\Mods\`（**必须与 DLL 同目录**）。
+     
+   它是随 mod 发布的资产包，装着 CAS 机型、挂载、硬点与烟幕/照明抛射物；装了才能保证每一关都能用上
+     
    飞机与烟幕/照明。
 
    装好后 `Bin\Mods\` 是这样：
    ```
    Bin\Mods\CustomFireSupport.dll
    Bin\Mods\cas_assets
+   Bin\Mods\cfs_audio
    ```
-4. 启动一次游戏（进主菜单即可），mod 会在 `MelonPreferences.cfg` 里写好 `[CustomFireSupport]` 段。     
-   压缩包里还带 `CustomFireSupport.cfg`（中文注释）与 `CustomFireSupport.en.cfg`（英文注释），     
+4. 再把压缩包里的 `cfs_audio` 复制到同一目录。它是 mod 自带的机炮音效（GAU-8 近/中/远、GSh-30 连发）；
+   不装也能玩，机炮会退回游戏自带的那一声。建议装上。
+5. 启动一次游戏（进主菜单即可），mod 会在 `MelonPreferences.cfg` 里写好 `[CustomFireSupport]` 段。
+     
+   压缩包里还带 `CustomFireSupport.cfg`（中文注释）与 `CustomFireSupport.en.cfg`（英文注释），
+     
    内容与它完全一致，可以直接覆盖那一段。
 
    日志关键字：`[CustomFireSupport]`；日志文件：`Bin\MelonLoader\Latest.log`。
@@ -93,7 +104,8 @@
 
 ## 3. 槽位设置（`SlotN_*`，每槽 15 键）
 
-> 下表的 `SlotN_` 实际使用时把 `N` 换成 1~6。>   
+> 下表的 `SlotN_` 实际使用时把 `N` 换成 1~6。
+>   
 > 「默认」一列按默认布局给出。
 
 | 键                             | 类型  | 默认                                                                                                                | 可取值                            | 含义                                                                                                            |
@@ -114,12 +126,16 @@
 | `SlotN_CasAccuracy`           | 小数  | `1.0`                                                                                                             | `-1` ~ `100`                   | CAS **落点圆半径 = 值 × 15 米**：`0`（或 `-1`）= 半径 0 = 锁定目标中心；`0.2` = 3 米；`0.5` = 7.5 米；`1` = 15 米；`>1` = 更大。仅 CAS 槽使用。 |
 | `SlotN_CasAttackTypes`        | 字符串 | 槽 4 = `GunRun`；槽 5 = `Rockets`；槽 6 = `Bombs`；其余 = `Any`                                                           | `Any`，或逗号分隔列表，见 §4.4           | CAS **攻击方式筛选**。只会保留机型实际挂载的类型。仅 CAS 槽使用。                                                                       |
 
-**仅火炮生效的键**：`RoundsPerCall`、`Munition`、`Weapon`、`ImpactDelaySeconds`、`InterShotDelaySeconds`、`DispersionMeters`、`AmmoName`。  
-**仅 CAS 生效的键**：`CasFlyover`、`CasAccuracy`、`CasAttackTypes`。  
+**仅火炮生效的键**：`RoundsPerCall`、`Munition`、`Weapon`、`ImpactDelaySeconds`、`InterShotDelaySeconds`、`DispersionMeters`、`AmmoName`。
+  
+**仅 CAS 生效的键**：`CasFlyover`、`CasAccuracy`、`CasAttackTypes`。
+  
 **两类都生效的键**：`Enabled`、`Type`、`DisplayName`、`Missions`、`CooldownSeconds`。
 
-> `ImpactDelaySeconds` 与 `InterShotDelaySeconds` 是**两个互相独立**的键：一个只管首弹什么时候到，>   
-> 一个只管弹与弹之间隔多久。想"首弹照原样、但把发间隔压一半"，就写 `ImpactDelaySeconds = 1.0` +>   
+> `ImpactDelaySeconds` 与 `InterShotDelaySeconds` 是**两个互相独立**的键：一个只管首弹什么时候到，
+>   
+> 一个只管弹与弹之间隔多久。想"首弹照原样、但把发间隔压一半"，就写 `ImpactDelaySeconds = 1.0` +
+>   
 > `InterShotDelaySeconds = 0.5`，两者不会互相影响。
 >
 > 机型、弹药、生成高度、入射角、来向、再装填时间**不需要配置**：默认沿用关卡自己的数值。
@@ -191,11 +207,28 @@
 | 干净的地图面板          | `HideVanillaFireSupport = true`（默认）                                                  |
 
 ---
+## 6. 更新日志
 
-## 6. 许可证与致谢
+### v1.0.3
+
+- 修复 CAS 呼叫失败。
+- 修复 CAS 火箭与投弹失效。
+- 修复火箭弹材质。
+- 新增机炮音效。
+
+### v1.0.2
+
+- 修复 CAS 呼叫失败与载荷未释放。
+
+---
+
+
+## 7. 许可证与致谢
 
 采用 **GNU Affero General Public License v3.0**（见 [LICENSE](LICENSE)）。
 
-**[GHPC Artillery Rework](https://github.com/QwertyRyo/GHPC_Artillery_Rework)**（作者 **QwertyRyo**）——  
-第一个把 GHPC 的火力支援做成"玩家可以自己改造的东西"的社区 mod。本 mod 的方向源自它，在此致谢。  
+**[GHPC Artillery Rework](https://github.com/QwertyRyo/GHPC_Artillery_Rework)**（作者 **QwertyRyo**）——
+  
+第一个把 GHPC 的火力支援做成"玩家可以自己改造的东西"的社区 mod。本 mod 的方向源自它，在此致谢。
+  
 **与它没有代码共用**：这里的火力支援系统（槽位、CAS 载荷工厂、集束弹）都是本 mod 的独立实现。

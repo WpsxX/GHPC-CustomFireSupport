@@ -153,6 +153,7 @@ namespace CustomFireSupport
                 // (menu) has not already done so - they then feed the donor scan and the library
                 // below even when this mission offers no CAS of its own.
                 CasPrewarmer.EnsurePrewarmed();
+                CasBundleMaterialRepair.RefreshForScene();
 
                 _fireManager = EnsureFireMissionManager(mapController);
                 _casManager = EnsureCasSupportManager(mapController);
@@ -606,7 +607,7 @@ namespace CustomFireSupport
 
         internal static void ResetForScene()
         {
-            CasCallReadinessRepair.ResetForScene();
+            FireSupportPatches.CasTargetSpreadPatch.ResetForScene();
             // A new scene means a new mission: the slots must be built again for it.
             _preparedThisMission = false;
             Teardown(false);
@@ -836,6 +837,11 @@ namespace CustomFireSupport
                     return false; // gun run: designated airframe, must not change.
                 }
 
+                // Re-roll the airframe for this call: a bomb / rocket slot flies a different aircraft
+                // each time. Safe now that every candidate comes from the bundle's name-keyed catalogue
+                // (CasPrewarmer.BundleAirframeNames), so a draw always yields a summonable prefab asset -
+                // the old scene-scan roster is what made a redraw land on an object whose
+                // CASController.Start() never ran.
                 string failure;
                 CasSlot fresh = CustomSlotBuilder.BuildCas(slot.Config, slot.Templates, faction, out failure);
                 if (fresh == null || fresh.Airframe == null || fresh.Airframe.airframePrefab == null)

@@ -10,17 +10,22 @@
 
 </div>
 
-> Game: **Gunner, HEAT, PC!** (MelonLoader mod)>   
-> Requires: MelonLoader 0.6.x + Harmony (bundled with MelonLoader)>   
-> Version: **v1.0.1**
+> Game: **Gunner, HEAT, PC!** (MelonLoader mod)
+>   
+> Requires: MelonLoader 0.6.x + Harmony (bundled with MelonLoader)
+>   
+> Version: **v1.0.3**
 
-The mod puts **6 configurable slots** on the mission map's fire-support panel.  
-Everything it does is decided by the `[CustomFireSupport]` section in  
+The mod puts **6 configurable slots** on the mission map's fire-support panel.
+  
+Everything it does is decided by the `[CustomFireSupport]` section in
+  
 `Bin\UserData\MelonPreferences.cfg` — **no code changes, no recompiling**.
 
 This document covers only **what you can set yourself**: what every key means and what values it takes.
 
-Built on the fire-support idea of [GHPC Artillery Rework](https://github.com/QwertyRyo/GHPC_Artillery_Rework)  
+Built on the fire-support idea of [GHPC Artillery Rework](https://github.com/QwertyRyo/GHPC_Artillery_Rework)
+  
 by QwertyRyo — see [License & Credits](#6-license--credits).
 
 ## Default layout (all six slots on by default)
@@ -40,21 +45,30 @@ Set a slot's `Enabled` to `false` if you do not need it; to repurpose a slot, se
 
 ## 0. Install and when it takes effect
 
-1. Download the latest `CustomFireSupport-v1.0.1.zip` from this repository's **Releases** page.
+1. Download the latest `CustomFireSupport-v1.0.3.zip` from this repository's **Releases** page.
 2. Copy `CustomFireSupport.dll` from the zip into `<game>\Bin\Mods\`.
-3. Copy `cas_assets` from the zip into the same `<game>\Bin\Mods\` folder (**it must sit next to the     
-   DLL**). It is the asset pack shipped with the mod: CAS airframes, loadouts, hardpoints and the smoke /     
-   illumination projectiles. With it installed, aircraft plus smoke / illumination are available in every     
+3. Copy `cas_assets` from the zip into the same `<game>\Bin\Mods\` folder (**it must sit next to the
+     
+   DLL**). It is the asset pack shipped with the mod: CAS airframes, loadouts, hardpoints and the smoke /
+     
+   illumination projectiles. With it installed, aircraft plus smoke / illumination are available in every
+     
    mission.
 
    `Bin\Mods\` then looks like this:
    ```
    Bin\Mods\CustomFireSupport.dll
    Bin\Mods\cas_assets
+   Bin\Mods\cfs_audio
    ```
-4. Start the game once (reaching the main menu is enough); the mod writes the `[CustomFireSupport]`     
-   section into `MelonPreferences.cfg`. The zip also carries `CustomFireSupport.cfg` (and its     
-   English-commented twin `CustomFireSupport.en.cfg`) with exactly the same content, either of which you     
+4. Copy `cfs_audio` from the zip into the same folder as well. It holds the mod's custom gun
+   sounds (GAU-8 close / mid / far and the GSh-30 burst); without it a gun run falls back to the
+   game's own shot. Optional, but recommended.
+5. Start the game once (reaching the main menu is enough); the mod writes the `[CustomFireSupport]`
+   section into `MelonPreferences.cfg`. The zip also carries `CustomFireSupport.cfg` (and its
+     
+   English-commented twin `CustomFireSupport.en.cfg`) with exactly the same content, either of which you
+     
    can use to overwrite that section instead.
 
    Log tag: `[CustomFireSupport]`. Log file: `Bin\MelonLoader\Latest.log`.
@@ -116,16 +130,22 @@ Set a slot's `Enabled` to `false` if you do not need it; to repurpose a slot, se
 | `SlotN_CasAccuracy`           | float  | `1.0`                                                                                                                              | `-1` – `100`                               | CAS **impact circle radius = value × 15 m**: `0` (or `-1`) = radius 0 = the locked target's centre; `0.2` = 3 m; `0.5` = 7.5 m; `1` = 15 m; `>1` = larger. CAS slots only.             |
 | `SlotN_CasAttackTypes`        | string | slot 4 = `GunRun`; slot 5 = `Rockets`; slot 6 = `Bombs`; others = `Any`                                                            | `Any`, or a comma-separated list, see §4.4 | CAS **attack-type filter**. Only types the airframe actually carries are kept. CAS slots only.                                                                                         |
 
-**Artillery-only keys**: `RoundsPerCall`, `Munition`, `Weapon`, `ImpactDelaySeconds`, `InterShotDelaySeconds`, `DispersionMeters`, `AmmoName`.  
-**CAS-only keys**: `CasFlyover`, `CasAccuracy`, `CasAttackTypes`.  
+**Artillery-only keys**: `RoundsPerCall`, `Munition`, `Weapon`, `ImpactDelaySeconds`, `InterShotDelaySeconds`, `DispersionMeters`, `AmmoName`.
+  
+**CAS-only keys**: `CasFlyover`, `CasAccuracy`, `CasAttackTypes`.
+  
 **Both kinds**: `Enabled`, `Type`, `DisplayName`, `Missions`, `CooldownSeconds`.
 
-> `ImpactDelaySeconds` and `InterShotDelaySeconds` are **two independent keys**: one only says when the>   
-> first round lands, the other only says how far apart the rounds are. For "keep the first-round delay as>   
-> it is but halve the interval", write `ImpactDelaySeconds = 1.0` + `InterShotDelaySeconds = 0.5` — they>   
+> `ImpactDelaySeconds` and `InterShotDelaySeconds` are **two independent keys**: one only says when the
+>   
+> first round lands, the other only says how far apart the rounds are. For "keep the first-round delay as
+>   
+> it is but halve the interval", write `ImpactDelaySeconds = 1.0` + `InterShotDelaySeconds = 0.5` — they
+>   
 > never affect each other.
 >
-> Airframe, ammunition, spawn altitude, impact angle, approach direction and reload time need **no>   
+> Airframe, ammunition, spawn altitude, impact angle, approach direction and reload time need **no
+>   
 > configuration**: the game's own values are used.
 
 ---
@@ -197,12 +217,31 @@ Values (comma-separated, multiple allowed; `Any` or empty = no filter, i.e. ever
 
 ---
 
-## 6. License & Credits
+## 6. Changelog
+
+### v1.0.3
+
+- Fixed CAS calls that occasionally failed to send an aircraft.
+- Fixed CAS rockets and bombs that could fail to fire.
+- Fixed rocket impact materials.
+- Added custom gun sounds.
+
+### v1.0.2
+
+- Fixed CAS call failures and payloads not being released.
+
+---
+
+## 7. License & Credits
 
 Licensed under the **GNU Affero General Public License v3.0** (see [LICENSE](LICENSE)).
 
-**[GHPC Artillery Rework](https://github.com/QwertyRyo/GHPC_Artillery_Rework)** by **QwertyRyo** — the  
-community mod that first turned GHPC's fire support into something a player could reshape. The direction  
-this mod took started there, and credit and thanks go to its author. No code is shared with it: the  
-fire-support system here (the slots, the CAS payload factory, the cluster munition) is this mod's own  
+**[GHPC Artillery Rework](https://github.com/QwertyRyo/GHPC_Artillery_Rework)** by **QwertyRyo** — the
+  
+community mod that first turned GHPC's fire support into something a player could reshape. The direction
+  
+this mod took started there, and credit and thanks go to its author. No code is shared with it: the
+  
+fire-support system here (the slots, the CAS payload factory, the cluster munition) is this mod's own
+  
 implementation.

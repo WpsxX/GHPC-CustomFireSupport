@@ -130,6 +130,126 @@ namespace CustomFireSupport
         }
 
         /// <summary>
+        /// The aircraft side a faction flies: NATO for Blue (US / West Germany), Pact for Red (Soviet /
+        /// East Germany). Draw pools use this to keep a Soviet task flying Soviet aircraft and a US task
+        /// flying American ones, instead of merely preferring one over the other by score.
+        ///
+        /// Takes the game's Faction as an int on purpose: this file is kept free of the game's Faction
+        /// enum (see <see cref="AirframeSide"/>) so it stays testable without the shipped assembly.
+        /// Faction.Blue = 3 and Faction.Red = 4 in GHPC; anything else is treated as Red/Pact.
+        /// </summary>
+        internal static AirframeSide SideOfFactionValue(int faction)
+        {
+            return faction == 3 ? AirframeSide.Nato : AirframeSide.Pact;
+        }
+
+        // ------------------------------------------------------------------
+        // The loadout each airframe ships with
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// The loadout each CAS airframe ships with, as "airframe|loadout" (lowercase, exact match).
+        ///
+        /// Read from the exported Unity project: every airframe prefab's CASHardpointManager carries a
+        /// `Loadout` reference, and these are the pairs it points at. SU22 deliberately shares the
+        /// MiG-23BN's FAB-250 loadout - that is the game's own binding, not a mod artifact, so it is
+        /// listed as SU22's default rather than treated as a cross-pair.
+        ///
+        /// This table is what makes "the airframe flies its OWN loadout" checkable. Without it the draw
+        /// pool could only ask "does this loadout carry the requested weapon", which every cross-pair
+        /// also satisfies, so another aircraft's pylon would be admitted to the top-tier pool.
+        /// </summary>
+        private static readonly string[] DefaultLoadoutPairs =
+        {
+            "a10|a-10 mk82 focus",
+            "f104|f-104g mk82s only",
+            "f4_lw|f4 2x triple mk82",
+            "f4_usaf|f4 2x triple mk82",
+            "mig17|mig-17 rockets only",
+            "mig21|mig-21 rockets only",
+            "mig23bn|mig-23bn fab-250s only",
+            "su22|mig-23bn fab-250s only"
+        };
+
+        /// <summary>
+        /// True when this loadout is the one the airframe ships with (see <see cref="DefaultLoadoutPairs"/>).
+        /// An airframe whose default binding is unknown returns false, so it cannot enter the top-tier
+        /// pool; it stays reachable through the synthesized tiers rather than being dropped outright.
+        /// </summary>
+        internal static bool IsDefaultLoadoutPair(string airframeName, string loadoutName)
+        {
+            if (string.IsNullOrEmpty(airframeName) || string.IsNullOrEmpty(loadoutName))
+            {
+                return false;
+            }
+            string key = airframeName.Trim().ToLowerInvariant() + "|" + loadoutName.Trim().ToLowerInvariant();
+            for (int i = 0; i < DefaultLoadoutPairs.Length; i++)
+            {
+                if (string.Equals(DefaultLoadoutPairs[i], key, System.StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // ------------------------------------------------------------------
+        // Explicitly approved airframe + loadout pairs
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// Airframe + loadout pairs the mod is allowed to fly even though the pair is not the one the
+        /// game binds by default, as "airframe|loadout" (both lowercase, matched exactly).
+        ///
+        /// WHY THIS LIST EXISTS: 6 of the game's 8 CAS airframes default to a BOMB loadout, and only the
+        /// MiG-17 / MiG-21 default to rockets. That leaves the rocket pool with two aircraft, both Soviet,
+        /// so a US/NATO task's rocket slot has nothing of its own to draw and has to synthesize a payload
+        /// from another aircraft's pylon. Three further rocket loadouts ship in the same bundle and are
+        /// mechanically valid fits - they are simply not what their airframe happens to default to:
+        ///
+        ///   F104    + F-104G Rockets          (5 hardpoint slot(s) vs 5 attach point(s)) - 2x Lau 32 FFAR
+        ///   MiG23BN + MiG-23BN rockets only   (4 vs 4) - 2x B8 + 2x UB16
+        ///   SU22    + SU-22 rockets Multiple  (4 vs 4) - 2x UB32 + 2x B8
+        ///
+        /// Each was verified against the exported Unity project: the loadout lists only rocket hardpoints
+        /// (CASHardpoint._type == 1), every one is present in the mod's own cas_assets bundle, and each
+        /// pair satisfies the game's HasCriticalConfigError() rule (hardpoint length == 1, or >= the
+        /// airframe's attach-point count). Adding one here does NOT bypass any validation - the pair still
+        /// has to pass FitsAirframe, and a typo simply fails to match and changes nothing.
+        ///
+        /// The list is deliberately explicit rather than "any loadout whose weapons match": the whole point
+        /// of the fix is that an airframe must fly a loadout that belongs to it.
+        /// </summary>
+        private static readonly string[] ApprovedCrossLoadoutPairs =
+        {
+            "f104|f-104g rockets",
+            "mig23bn|mig-23bn rockets only",
+            "su22|su-22 rockets multiple"
+        };
+
+        /// <summary>
+        /// True when this airframe+loadout pair was explicitly approved above. Both names are matched
+        /// case-insensitively and exactly (not as substrings), so an unrelated loadout whose name merely
+        /// contains one of these strings cannot slip through.
+        /// </summary>
+        internal static bool IsApprovedPair(string airframeName, string loadoutName)
+        {
+            if (string.IsNullOrEmpty(airframeName) || string.IsNullOrEmpty(loadoutName))
+            {
+                return false;
+            }
+            string key = airframeName.Trim().ToLowerInvariant() + "|" + loadoutName.Trim().ToLowerInvariant();
+            for (int i = 0; i < ApprovedCrossLoadoutPairs.Length; i++)
+            {
+                if (string.Equals(ApprovedCrossLoadoutPairs[i], key, System.StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
         /// Patterns of the two aircraft the gun-run slots are pinned to: the A-10 (Blue) and the
         /// MiG-23BN (Red). Longest/first match wins, and matching is a case-insensitive substring test
         /// because donors appear as "A10", "A-10A", "MiG23BN", "MiG-23BN" depending on the source.

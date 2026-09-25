@@ -356,9 +356,12 @@ namespace CustomFireSupport
                 ? BuildAttacksForKinds(requestedKinds, template)
                 : FilterAttacks(config, template);
 
-            // CASAttackMeta does not control CanDoAttackType(); the game inspects the mounted
-            // hardpoints. Keep physical mounts in lockstep with an explicit attack filter so an
-            // unrequested bomb/rocket cannot be selected during target classification.
+            // Filtering CASAttackMeta alone is not enough. GHPC chooses the final attack from the
+            // mounted hardpoints, so a Rockets-only slot that still carries the template's Bombs
+            // pylons can select Bombs for a soft target even though its Bombs metadata was removed;
+            // GetAttackMetaByType then returns null and the aircraft flies the pass without firing.
+            // Restrict the physical payload to the explicitly requested types as well. A single
+            // matching prefab is reused on every pylon, which is always a valid GHPC loadout.
             if (config.AttackTypes != null && config.AttackTypes.Length > 0)
             {
                 hardpoints = RestrictHardpoints(hardpoints, config.AttackTypes, template.AttachPointCount);
@@ -609,6 +612,11 @@ namespace CustomFireSupport
             return attachPoints > 0 && hardpoints.Length >= attachPoints;
         }
 
+        /// <summary>
+        /// Keeps the mounted hardpoints in lockstep with an explicit CasAttackTypes filter. The game
+        /// does not use CASAttackMeta as the source of CanDoAttackType(); it inspects the instantiated
+        /// hardpoints, so leaving an unrequested Bombs/Rockets prefab here reintroduces the attack type.
+        /// </summary>
         private static GameObject[] RestrictHardpoints(GameObject[] source, AttackKind[] requested,
             int attachPoints)
         {
@@ -648,6 +656,7 @@ namespace CustomFireSupport
             {
                 return source;
             }
+
             if (requested.Length == 1 || matching.Count == 1)
             {
                 return new[] { matching[0] };
@@ -930,9 +939,10 @@ namespace CustomFireSupport
         ///     own aircraft) and fixed wing +20;
         ///   * an exact hardpoint/attach-point match +5, fixed wing +2, prefab over live instance +1.
         ///
-        /// The score only decides WHO is eligible, not who flies: every deliverable candidate of the
-        /// player's faction is in the draw, and one is picked at random (see DrawRandomAirframe), so a
-        /// bomb or rocket slot sends a different aircraft with a different loadout on every call.
+        /// The score decides WHO is eligible and which airframe is preferred. For a bomb or rocket slot
+        /// the ranking seeds the draw pool and the actual aircraft is picked per call (see
+        /// PickAirframeForCall), so the slot sends a different model on each call while every candidate
+        /// comes from the bundle's name-keyed catalogue - which is what makes that variety safe.
         /// </summary>
         private static CasTemplate PickBest(List<CasTemplate> candidates, SlotConfig config, Faction playerFaction)
         {
@@ -1039,8 +1049,18 @@ namespace CustomFireSupport
                 }
 
                 scored.Add(candidate);
+                // `native` is the tier-1 pool: the airframe flying a loadout that BELONGS to it, so the
+                // sortie uses the game's own pylons/ammo/visuals instead of a synthesized payload.
+                //
+                // It requires the pair to be this airframe's OWN loadout. Testing only "does this loadout
+                // carry the requested type" is not enough: the donor scan pairs every airframe with every
+                // loaded loadout, so that weaker test puts cross-pairs such as "MiG17 + SU-22 rockets
+                // Multiple" (another aircraft's pod) and "MiG17 + MiG-21 rockets only" straight into the
+                // top-tier draw - the very combination this change exists to keep out. The approved-pair
+                // list is the one controlled exception (see AdmitApprovedPairs), and it is applied later.
                 if ((wanted == null || supported == wanted.Length) &&
-                    CasAirframeCatalog.LoadoutFitsSide(candidate.Name, candidate.LoadoutName))
+                    CasAirframeCatalog.LoadoutFitsSide(candidate.Name, candidate.LoadoutName) &&
+                    IsOwnLoadout(candidate))
                 {
                     native.Add(candidate);
                 }
@@ -1054,22 +1074,20 @@ namespace CustomFireSupport
             // Bomb and rocket slots fly a DIFFERENT airframe with a different loadout on every call.
             // Gun runs and missile slots are deliberately excluded: their airframe is the designated one
             // (Blue = A-10, Red = MiG-23BN) and must stay fixed.
+            //
+            // This is safe again now that the airframe roster comes from the bundle's name-keyed catalogue
+            // (CasPrewarmer.BundleAirframeNames) instead of a scene scan. The reason the draw used to be
+            // pinned per mission was that the OLD roster depended on what a particular scan had collected:
+            // a slot that drew a "foreign" object got an aircraft whose CASController.Start() never ran,
+            // and the doubled map click made the two dispatches disagree about which model to send. With
+            // every candidate now a known bundle prefab asset, each draw yields a summonable aircraft, so
+            // the per-call variety the slot is supposed to have can be restored.
+            //
+            // The ONE fixed rule stays: a US (Blue) ROCKET slot always flies the F-104G, the only NATO
+            // airframe with a rocket loadout.
             if (best != null && !pinnedAirframe)
             {
-                // Rockets skip the two gun-run aircraft (they are what the player sees on every strafe
-                // already); a slot that also asks for bombs is a pure draw, so nothing is excluded.
-                bool skipGunRunAirframes = wantsRockets && !wantsBombs;
-                List<CasTemplate> pool = native.Count > 0 ? native : scored;
-                best = DrawRandomAirframe(pool, config, playerFaction, skipGunRunAirframes, best) ?? best;
-
-                if (native.Count == 0)
-                {
-                    Log.Warn("slot " + config.Index + ": no airframe here carries " +
-                             FireSupportTemplates.DescribeAttacks(config.AttackTypes) +
-                             " in its own loadout, so the payload has to be synthesized from the loaded " +
-                             "hardpoint library (that is another aircraft's pylon; a rocket pod mounted " +
-                             "this way may look wrong in game).");
-                }
+                best = PickAirframeForCall(best, native, scored, config, playerFaction, wantsRockets, wantsBombs);
             }
 
             if (best != null)
@@ -1085,50 +1103,65 @@ namespace CustomFireSupport
         }
 
         /// <summary>
-        /// Draws the airframe for a bomb / rocket slot: one uniform pick out of every deliverable
-        /// candidate of the player's faction, avoiding the one this slot flew last so two consecutive
-        /// calls never send the same aircraft. The pool widens to neutral (then to the enemy, which
-        /// BuildCas already warns about) only when the player's own side has nothing to offer at all.
+        /// The airframe this slot flies for the whole mission. Chosen once, remembered for the rest of the
+        /// mission, and re-chosen only when a new mission builds its slots.
         ///
-        /// This replaces the old "within 25 points of the winner" pool, which was usually a single
-        /// candidate - the faction and "carries the type" bonuses dominate the score - so the "random"
-        /// airframe never actually changed.
+        /// The draw is made from the airframe's OWN loadout first (with the approved pairs admitted),
+        /// then from the validated synthesized candidates, and it avoids the model this slot flew last so
+        /// two consecutive calls never send the same aircraft.
+        ///
+        /// The ONE deliberately fixed rule: a US (Blue) ROCKET slot always flies the F-104G. The F-104 is
+        /// the only NATO airframe in the game's content with a rocket loadout, so "drawing" there would be
+        /// a one-entry lottery anyway; pinning it makes the intent explicit and keeps the slot from falling
+        /// through to a synthesized payload built from another aircraft's pylon.
         /// </summary>
-        private static CasTemplate DrawRandomAirframe(List<CasTemplate> scored, SlotConfig config,
-            Faction playerFaction, bool skipGunRunAirframes, CasTemplate fallback)
+        private static CasTemplate PickAirframeForCall(CasTemplate fallback, List<CasTemplate> native,
+            List<CasTemplate> scored, SlotConfig config, Faction playerFaction, bool wantsRockets, bool wantsBombs)
         {
-            List<CasTemplate> pool = BuildDrawPool(scored, playerFaction, skipGunRunAirframes);
-            if (pool.Count == 0)
+            // Rockets skip the two gun-run aircraft (they are what the player sees on every strafe
+            // already); a slot that also asks for bombs is a pure draw, so nothing is excluded.
+            bool skipGunRunAirframes = wantsRockets && !wantsBombs;
+
+            // US rocket slot: the F-104G is the designated airframe, like the A-10 is for a gun run.
+            if (playerFaction == Faction.Blue && wantsRockets && !wantsBombs)
             {
-                // Only the designated gun-run aircraft can do what this slot asked for: rather than
-                // dropping the call, allow them (the slot still needs a plane).
-                pool = BuildDrawPool(scored, playerFaction, false);
-                if (pool.Count > 0)
+                CasTemplate f104 = FindBlueRocketAirframe(scored);
+                if (f104 != null)
                 {
-                    Log.Warn("slot " + config.Index + ": only the gun-run aircraft can deliver " +
-                             FireSupportTemplates.DescribeAttacks(config.AttackTypes) +
-                             " here; using it despite the rocket-slot exclusion.");
+                    Log.Verbose("slot " + config.Index + ": US rocket slot is fixed to the F-104G " +
+                                "(the only NATO airframe with a rocket loadout): '" + f104.Name + "' + '" +
+                                f104.LoadoutName + "'.");
+                    return f104;
                 }
             }
+
+            // The airframe's OWN loadout first (with the approved pairs admitted), then the validated
+            // synthesized candidates. Passing the real `native` list is what makes tier 1 usable -
+            // handing this method an empty list would push every slot down to a synthesized payload, or
+            // (worse) leave the pool empty and drop the slot entirely.
+            List<CasTemplate> pool = AdmitApprovedPairs(native, scored, config, playerFaction,
+                skipGunRunAirframes, wantsRockets, wantsBombs);
+            pool = BuildAirframeDrawPool(pool, scored, config, playerFaction, skipGunRunAirframes);
             if (pool.Count == 0)
             {
+                // Nothing validated. Fall back to the ranked winner rather than dropping the slot: a slot
+                // that spawns something imperfect is better than a button that sends nothing.
+                Log.Warn("slot " + config.Index + ": no airframe could be validated for this call's " +
+                         FireSupportTemplates.DescribeAttacks(config.AttackTypes) + " slot; using the ranked " +
+                         "winner '" + (fallback == null ? "?" : fallback.Name) + "' anyway.");
                 return fallback;
             }
 
+            // One uniform draw out of the pool, avoiding the aircraft this slot flew last.
             string previous;
             _lastPickedAirframe.TryGetValue(config.Index, out previous);
-
-            // Draw a candidate that is NOT the aircraft this slot flew last (a single-pass pool that
-            // only holds that one aircraft repeats it - sending nothing would be worse).
             CasTemplate drawn = DrawDifferent(pool, previous) ?? pool[UnityEngine.Random.Range(0, pool.Count)];
+            drawn = drawn ?? fallback;
 
-            if (CustomFireSupportMod.VerboseLogging)
-            {
-                Log.Verbose("slot " + config.Index + ": airframe draw from " + pool.Count + " candidate(s) -> '" +
-                            drawn.Name + "'" +
-                            (previous != null ? " (previous call: '" + previous + "')" : string.Empty) +
-                            ", pool: " + DescribeDrawPool(pool));
-            }
+            Log.Verbose("slot " + config.Index + ": airframe draw from " + pool.Count + " candidate(s) -> '" +
+                        (drawn == null ? "?" : drawn.Name) + "'" +
+                        (previous != null ? " (previous call: '" + previous + "')" : string.Empty) +
+                        "; pool: " + DescribeDrawPool(pool));
             return drawn;
         }
 
@@ -1138,6 +1171,10 @@ namespace CustomFireSupport
         /// </summary>
         private static CasTemplate DrawDifferent(List<CasTemplate> pool, string previous)
         {
+            if (pool == null || pool.Count == 0)
+            {
+                return null;
+            }
             if (string.IsNullOrEmpty(previous))
             {
                 return pool[UnityEngine.Random.Range(0, pool.Count)];
@@ -1146,7 +1183,7 @@ namespace CustomFireSupport
             int alternatives = 0;
             for (int i = 0; i < pool.Count; i++)
             {
-                if (!string.Equals(pool[i].Name, previous, StringComparison.Ordinal))
+                if (pool[i] != null && !string.Equals(pool[i].Name, previous, StringComparison.Ordinal))
                 {
                     alternatives++;
                 }
@@ -1160,7 +1197,7 @@ namespace CustomFireSupport
             int wanted = UnityEngine.Random.Range(0, alternatives);
             for (int i = 0; i < pool.Count; i++)
             {
-                if (string.Equals(pool[i].Name, previous, StringComparison.Ordinal))
+                if (pool[i] == null || string.Equals(pool[i].Name, previous, StringComparison.Ordinal))
                 {
                     continue;
                 }
@@ -1173,19 +1210,314 @@ namespace CustomFireSupport
             return null;
         }
 
-        /// <summary>Deliverable candidates of one faction (the player's own first, then neutral, then any).</summary>
-        private static List<CasTemplate> BuildDrawPool(List<CasTemplate> scored, Faction playerFaction, bool skipGunRunAirframes)
+        /// <summary>
+        /// The NATO airframe that carries rockets in its own loadout, for the fixed US rocket slot.
+        /// Matched on the approved pair so it is the F-104G + "F-104G Rockets" combination and not some
+        /// unrelated candidate that merely mounts a rocket pod.
+        /// </summary>
+        private static CasTemplate FindBlueRocketAirframe(List<CasTemplate> scored)
         {
-            List<CasTemplate> pool = CollectDrawPool(scored, playerFaction, skipGunRunAirframes);
-            if (pool.Count == 0)
+            if (scored == null)
             {
-                pool = CollectDrawPool(scored, Faction.Neutral, skipGunRunAirframes);
+                return null;
             }
-            if (pool.Count == 0)
+            for (int i = 0; i < scored.Count; i++)
             {
-                pool = CollectDrawPool(scored, Faction.Neutral, skipGunRunAirframes, everything: true);
+                CasTemplate candidate = scored[i];
+                if (candidate == null)
+                {
+                    continue;
+                }
+                if (candidate.Faction != Faction.Blue)
+                {
+                    continue;
+                }
+                if (!candidate.Supports(AttackKind.Rockets))
+                {
+                    continue;
+                }
+                if (!CasAirframeCatalog.LoadoutFitsSide(candidate.Name, candidate.LoadoutName))
+                {
+                    continue;
+                }
+                // Prefer the explicitly approved F-104G rockets pair; fall back to any Blue candidate
+                // that carries rockets in its own loadout.
+                if (CasAirframeCatalog.IsApprovedPair(candidate.Name, candidate.LoadoutName))
+                {
+                    return candidate;
+                }
             }
-            return pool;
+            for (int i = 0; i < scored.Count; i++)
+            {
+                CasTemplate candidate = scored[i];
+                if (candidate != null && candidate.Faction == Faction.Blue &&
+                    candidate.Supports(AttackKind.Rockets) &&
+                    CasAirframeCatalog.LoadoutFitsSide(candidate.Name, candidate.LoadoutName))
+                {
+                    return candidate;
+                }
+            }
+            return null;
+        }
+
+
+        /// <summary>
+        /// True when this loadout genuinely belongs to this airframe: either it is the pair the game
+        /// ships, or it is one of the explicitly approved pairs (see
+        /// <see cref="CasAirframeCatalog.IsApprovedPair"/>).
+        ///
+        /// This is the guard that keeps another aircraft's pylon out of the top-tier draw. The donor scan
+        /// produces every airframe x every loadout, so "carries the right weapon" alone would admit
+        /// nonsense such as "MiG17 + SU-22 rockets Multiple".
+        /// </summary>
+        private static bool IsOwnLoadout(CasTemplate candidate)
+        {
+            if (candidate == null)
+            {
+                return false;
+            }
+            return CasAirframeCatalog.IsDefaultLoadoutPair(candidate.Name, candidate.LoadoutName) ||
+                   CasAirframeCatalog.IsApprovedPair(candidate.Name, candidate.LoadoutName);
+        }
+
+        /// <summary>
+        /// Adds the explicitly approved airframe+loadout pairs (see
+        /// <see cref="CasAirframeCatalog.IsApprovedPair"/>) to the tier-1 pool.
+        ///
+        /// WHY: 6 of the game's 8 CAS airframes default to a bomb loadout, so only the MiG-17 and MiG-21
+        /// put an aircraft in the rocket pool - both Soviet. A US/NATO rocket slot therefore has no
+        /// airframe of its own and has to synthesize a payload from another aircraft's pylon. Three more
+        /// rocket loadouts ship in the same bundle and are valid fits for their airframe, but the pair is
+        /// not the airframe's DEFAULT loadout, so the ordinary `native` test misses it. Approving the pair
+        /// by name is what lets it into tier 1, which in turn means the shipped loadout is used as-is
+        /// (real pylons, ammo counts and visuals) instead of a synthesized one.
+        ///
+        /// Admission is still conditional: the pair has to be deliverable, side-legal and loadout-legal.
+        /// Only the "is this the airframe's own default loadout" question is waived.
+        ///
+        /// The returned pool is the original <paramref name="native"/> when nothing was approved and
+        /// nothing needed admitting, so the common path allocates nothing extra.
+        /// </summary>
+        private static List<CasTemplate> AdmitApprovedPairs(List<CasTemplate> native, List<CasTemplate> ordered,
+            SlotConfig config, Faction playerFaction, bool skipGunRunAirframes, bool wantsRockets, bool wantsBombs)
+        {
+            // Only rocket and bomb slots draw at all (gun run / missile are pinned), so this is a no-op
+            // for the pinned kinds.
+            if (!wantsRockets && !wantsBombs)
+            {
+                return native;
+            }
+
+            List<CasTemplate> admitted = null;
+            for (int i = 0; i < ordered.Count; i++)
+            {
+                CasTemplate candidate = ordered[i];
+                if (!CasAirframeCatalog.IsApprovedPair(candidate.Name, candidate.LoadoutName))
+                {
+                    continue;
+                }
+                // The approved pair still has to deliver what this slot asked for.
+                if (config.AttackTypes != null)
+                {
+                    bool coversAll = true;
+                    for (int w = 0; w < config.AttackTypes.Length; w++)
+                    {
+                        if (!candidate.Supports(config.AttackTypes[w]))
+                        {
+                            coversAll = false;
+                            break;
+                        }
+                    }
+                    if (!coversAll)
+                    {
+                        continue;
+                    }
+                }
+                if (!CasAirframeCatalog.LoadoutFitsSide(candidate.Name, candidate.LoadoutName))
+                {
+                    continue;
+                }
+                // A pure rocket slot normally skips the gun-run aircraft by name. An explicitly approved
+                // pair is exempt: "MiG-23BN + MiG-23BN rockets only" is a real rocket sortie and is the
+                // only Pact aircraft besides the MiG-17/21 that can fly one, so excluding it by name
+                // would defeat the purpose of the list. The other two are not gun-run aircraft anyway.
+                if (skipGunRunAirframes && CasAirframeCatalog.IsGunRunAirframe(candidate.Name) &&
+                    !CasAirframeCatalog.IsApprovedPair(candidate.Name, candidate.LoadoutName))
+                {
+                    continue;
+                }
+
+                if (admitted == null)
+                {
+                    // Copy the caller's list (which may be null). Guarding here rather than at every call
+                    // site: `new List<CasTemplate>(null)` throws, and that exception would be swallowed by
+                    // the caller's catch, silently leaving the slot with no airframe at all.
+                    admitted = native == null ? new List<CasTemplate>() : new List<CasTemplate>(native);
+                }
+                bool already = false;
+                for (int k = 0; k < admitted.Count; k++)
+                {
+                    if (ReferenceEquals(admitted[k], candidate))
+                    {
+                        already = true;
+                        break;
+                    }
+                }
+                if (!already)
+                {
+                    admitted.Add(candidate);
+                    Log.Verbose("slot " + config.Index + ": approved airframe+loadout pair admitted to the draw: '" +
+                                candidate.Name + "' + '" + candidate.LoadoutName + "'.");
+                }
+            }
+
+            return admitted ?? native;
+        }
+
+        /// <summary>
+        /// The airframe draw pool for a bomb / rocket slot, chosen in tiers so that a call can never be
+        /// handed an airframe+loadout pair the game will refuse to configure, and so the aircraft always
+        /// belongs to the side the player is fighting for.
+        ///
+        /// WHY THIS EXISTS: <see cref="CasDonorProvider.ScanLoadedObjects"/> pairs every scanned airframe
+        /// with every unrelated loaded loadout, so the raw candidate list contains cross-pairs such as
+        /// "A-10 carrying a Soviet rocket pod". Those pairs pass the mod's fit check (which only compares
+        /// hardpoint COUNT against attach-point count) but break in game: the loadout's hardpoint list is
+        /// neither a single entry nor one-per-attach-point, so `CASHardpointManager.HasCriticalConfigError()`
+        /// rejects it, `DoConfig()` returns before `SetUpHardpoints()`, and the sortie flies with nothing
+        /// to drop. The same cross-pairs are what produces the "clicked the map, got the marker, no
+        /// aircraft" reports.
+        ///
+        /// SIDE RULE (enforced here, not merely scored): a Soviet-faction task must only ever draw Soviet
+        /// aircraft, and a US/NATO task only NATO aircraft. Faction used to be a +1000 score bonus with the
+        /// pool falling back to Neutral and then to "everything", which is how an enemy airframe could end
+        /// up flying for the player. Each tier below filters by side first and only widens when the side
+        /// genuinely has nothing, and it says so when it does.
+        ///
+        /// Tier 1 (preferred) - the airframe's OWN loadout already carries every requested type, so
+        ///   nothing has to be synthesized and the pair is the one the game ships. This is the "rocket
+        ///   slots only draw rocket airframes, bomb slots only draw bomb airframes" split.
+        /// Tier 2 - `scored` restricted to candidates that are side-legal, loadout-legal and have a
+        ///   MEASURED attach-point count, so the fit check can actually be decided.
+        /// Tier 3 (last resort) - the old behaviour, announced loudly rather than taken silently, so a
+        ///   slot still sends a plane instead of failing outright.
+        /// </summary>
+        private static List<CasTemplate> BuildAirframeDrawPool(List<CasTemplate> native,
+            List<CasTemplate> scored, SlotConfig config, Faction playerFaction, bool skipGunRunAirframes)
+        {
+            // Tier 1: the airframe's own loadout delivers the request. Split by side, so a Pact task
+            // draws only Pact aircraft. A `native` entry whose airframe/loadout sides disagree is already
+            // excluded upstream (LoadoutFitsSide is required to enter `native`).
+            List<CasTemplate> own = FilterBySide(native, playerFaction, config, skipGunRunAirframes);
+            if (own.Count > 0)
+            {
+                return own;
+            }
+
+            // Tier 2: no airframe carries the request in its own loadout, so the payload must be
+            // synthesized. Keep only pairs that are side-legal, loadout-legal and measurable - an
+            // unmeasured attach-point count is what makes the game refuse the configuration, and that is
+            // precisely the pair that spawns nothing.
+            List<CasTemplate> measured = new List<CasTemplate>();
+            for (int i = 0; i < scored.Count; i++)
+            {
+                CasTemplate candidate = scored[i];
+                if (candidate.AttachPointCount <= 0)
+                {
+                    continue;
+                }
+                // The gun-run skip is applied by FilterBySide below, together with the approved-pair
+                // exemption. Applying it here too would drop an approved pair before that exemption can
+                // be consulted.
+                if (!CasAirframeCatalog.LoadoutFitsSide(candidate.Name, candidate.LoadoutName))
+                {
+                    continue;
+                }
+                measured.Add(candidate);
+            }
+            List<CasTemplate> measuredOwnSide = FilterBySide(measured, playerFaction, config, skipGunRunAirframes);
+            if (measuredOwnSide.Count > 0)
+            {
+                Log.Warn("slot " + config.Index + ": no " + playerFaction + " airframe carries " +
+                         FireSupportTemplates.DescribeAttacks(config.AttackTypes) +
+                         " in its own loadout, so the payload has to be synthesized from the loaded " +
+                         "hardpoint library (that is another aircraft's pylon; a rocket pod mounted " +
+                         "this way may look wrong in game). Drawing only from the " + measuredOwnSide.Count +
+                         " validated " + playerFaction + " pair(s).");
+                return measuredOwnSide;
+            }
+
+            // Tier 2b: the player's side has nothing usable at all. Widen to any side rather than
+            // dropping the call - but never silently, because the player will see a foreign aircraft.
+            if (measured.Count > 0)
+            {
+                Log.Warn("slot " + config.Index + ": no " + playerFaction + " airframe+loadout pair can be " +
+                         "validated for the " + FireSupportTemplates.DescribeAttacks(config.AttackTypes) +
+                         " slot; widening the draw to any faction (" + measured.Count + " candidate(s)). " +
+                         "The aircraft that arrives may belong to the other side.");
+                return measured;
+            }
+
+            // Tier 3: nothing measured either. Do not drop the call - keep the old pool, but say so.
+            Log.Warn("slot " + config.Index + ": no airframe+loadout pair could be validated for the " +
+                     FireSupportTemplates.DescribeAttacks(config.AttackTypes) + " slot (no candidate " +
+                     "carries it and none reports a usable attach-point count). Falling back to the " +
+                     "unvalidated candidate list; this sortie may spawn no aircraft at all.");
+            return scored;
+        }
+
+        /// <summary>
+        /// Restricts a draw pool to the player's own faction, widening to Neutral and then to any side
+        /// only when the player's side has nothing at all. The widening is reported by the caller.
+        ///
+        /// <paramref name="playerFaction"/> is Faction.Blue (NATO / US) or Faction.Red (Pact / Soviet);
+        /// the aircraft catalog's <see cref="AirframeSide"/> table is what decides which is which, so an
+        /// airframe whose faction the donor scan could not determine is carried on its name.
+        /// </summary>
+        private static List<CasTemplate> FilterBySide(List<CasTemplate> pool, Faction playerFaction,
+            SlotConfig config, bool skipGunRunAirframes)
+        {
+            List<CasTemplate> mine = new List<CasTemplate>();
+            List<CasTemplate> neutral = new List<CasTemplate>();
+            for (int i = 0; i < pool.Count; i++)
+            {
+                CasTemplate candidate = pool[i];
+                // A pure rocket slot skips the two gun-run aircraft by name. An explicitly approved pair is
+                // exempt here for the same reason it is exempt in AdmitApprovedPairs: "MiG-23BN + MiG-23BN
+                // rockets only" is a genuine rocket sortie, and MiG23BN matches the gun-run name pattern
+                // ("mig23bn"). Without this exemption the skip would silently undo the approval one call
+                // later - the pair is admitted to tier 1 and then dropped again right here.
+                if (skipGunRunAirframes && CasAirframeCatalog.IsGunRunAirframe(candidate.Name) &&
+                    !CasAirframeCatalog.IsApprovedPair(candidate.Name, candidate.LoadoutName))
+                {
+                    continue;
+                }
+                if (candidate.Faction == playerFaction)
+                {
+                    mine.Add(candidate);
+                }
+                else if (candidate.Faction == Faction.Neutral)
+                {
+                    neutral.Add(candidate);
+                }
+            }
+            if (mine.Count > 0)
+            {
+                return mine;
+            }
+            // Neutral entries are scanned prefabs whose faction the catalog could not pin down. Only the
+            // ones whose NAME resolves to the player's own side are safe to fly; an unknown name stays
+            // out rather than risking an enemy aircraft on a friendly task.
+            List<CasTemplate> neutralOnMySide = new List<CasTemplate>();
+            for (int i = 0; i < neutral.Count; i++)
+            {
+                AirframeSide side = CasAirframeCatalog.GuessSide(neutral[i].Name);
+                if (side == CasAirframeCatalog.SideOfFactionValue((int)playerFaction))
+                {
+                    neutralOnMySide.Add(neutral[i]);
+                }
+            }
+            return neutralOnMySide;
         }
 
         private static List<CasTemplate> CollectDrawPool(List<CasTemplate> scored, Faction faction,
@@ -1199,9 +1531,10 @@ namespace CustomFireSupport
                 {
                     continue;
                 }
-                if (skipGunRunAirframes && CasAirframeCatalog.IsGunRunAirframe(candidate.Name))
+                if (skipGunRunAirframes && CasAirframeCatalog.IsGunRunAirframe(candidate.Name) &&
+                    !CasAirframeCatalog.IsApprovedPair(candidate.Name, candidate.LoadoutName))
                 {
-                    continue;
+                    continue; // gun-run aircraft, unless the pair was explicitly approved for this slot
                 }
                 if (!CasAirframeCatalog.LoadoutFitsSide(candidate.Name, candidate.LoadoutName))
                 {

@@ -32,6 +32,24 @@
     <DebugType>none</DebugType>
     <Optimize>true</Optimize>
     <OutputPath>bin\Release\</OutputPath>
+    <!--
+      LOGGING SWITCH (see Log.cs).
+
+      Release ships WITHOUT logging. Log.Info/Warn/Error/Verbose carry [Conditional("CAS_LOG")], so
+      when CAS_LOG is undefined the compiler deletes every call statement together with the string
+      literals that feed it - the source keeps its comments and call sites, the binary does not keep
+      the text.
+
+      Measured on this project: 321024 -> 258560 bytes (-19.5%): 179 call sites and 622 string
+      literals gone. The material-recipe strings that the runtime actually needs are untouched
+      (verified: all 17 survive).
+
+      To produce a DIAGNOSTIC build that logs - what you want when investigating a reported
+      problem - add CAS_LOG here, or build with:
+
+          dotnet msbuild CustomFireSupport.csproj /p:Configuration=Release ^
+                            "/p:DefineConstants=TRACE%3BCAS_LOG"
+    -->
     <DefineConstants>TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
@@ -83,6 +101,10 @@
       <HintPath>$(GameDir)\Bin\GHPC_Data\Managed\UnityEngine.AssetBundleModule.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <Reference Include="UnityEngine.AudioModule">
+      <HintPath>$(GameDir)\Bin\GHPC_Data\Managed\UnityEngine.AudioModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
     <Reference Include="UnityEngine.UIModule">
       <HintPath>$(GameDir)\Bin\GHPC_Data\Managed\UnityEngine.UIModule.dll</HintPath>
       <Private>False</Private>
@@ -106,8 +128,13 @@
     <Compile Include="CasAttackLibrary.cs" />
     <Compile Include="CasBundleMaterialRepair.cs" />
     <Compile Include="CasCallReadinessRepair.cs" />
+    <Compile Include="CasFireChainRepair.cs" />
+    <Compile Include="CasFireChainRules.cs" /><Compile Include="CasGunAudio.cs" /><Compile Include="CasFlightBehaviourRepair.cs" />
     <Compile Include="CasImpactCacheRepair.cs" />
+    <Compile Include="WeakIdentitySet.cs" />
+    <Compile Include="CachedDelegate.cs" />
     <Compile Include="CasMaterialRecipe.cs" />
+    <Compile Include="CasNativeMaterialRecipe.cs" />
     <Compile Include="CasMissileVisualRepair.cs" />
     <Compile Include="CasMissileMotorBurnout.cs" />
     <Compile Include="FactionShellCatalog.cs" />

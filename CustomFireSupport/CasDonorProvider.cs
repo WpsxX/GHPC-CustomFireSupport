@@ -42,21 +42,6 @@ namespace CustomFireSupport
         };
 
         /// <summary>
-        /// Airframe + loadout pairs seen in earlier missions of this session. Prefab assets referenced
-        /// by a mission's CasAirframeUnit (and the ones found by the loaded-object scan) survive scene
-        /// unloads, so they stay usable for the rest of the session - this is what makes every aircraft
-        /// that any played mission offered available in later missions too.
-        /// </summary>
-        private sealed class CachedTemplate
-        {
-            internal GameObject Prefab;
-            internal CASLoadoutScriptable Loadout;
-            internal string Source;
-        }
-
-        private static readonly List<CachedTemplate> _cache = new List<CachedTemplate>();
-
-        /// <summary>
         /// false while the fit check is being bypassed (see <see cref="Collect"/>: when no candidate
         /// survives it, the list is rebuilt with the check off rather than dropping the slot).
         /// </summary>
@@ -101,47 +86,57 @@ namespace CustomFireSupport
             {
                 List<CasTemplate> templates = new List<CasTemplate>();
 
-                if (manager != null)
-                {
-                    AddSceneAirframes(templates, manager.BlueCasAirframes, Faction.Blue);
-                    AddSceneAirframes(templates, manager.RedCasAirframes, Faction.Red);
-                }
+                // ============================ OPTION B ROSTER RULE ============================
+                //
+                // THE AIRFRAME (the prefab) MAY ONLY EVER COME FROM THE BUNDLE. The PAYLOAD (the loadout
+                // asset) may additionally come from the mission scene, so slots keep the variety of
+                // mounting something the bundle does not ship.
+                //
+                // Why the split: the failure that made calls "sometimes spawn nothing" was in the PREFAB,
+                // not the loadout. An airframe taken from the scene is a live object; instantiating one
+                // clones something whose CASController.Start() never runs, so the aircraft appears (or
+                // not) but never engages. A loadout is a ScriptableObject describing pylons - it is read,
+                // never instantiated as the aircraft - so a scene loadout is safe to use.
+                //
+                // The previous version called AddBundleAirframes() and then ALSO added the scene
+                // airframes, so the bundle merely enlarged the pool instead of defining it. Scene
+                // prefabs stayed selectable and were still drawn occasionally - which is exactly the
+                // "small chance of no aircraft" that this replaces. The scene is now consulted for
+                // LOADOUTS ONLY.
+                // =============================================================================
+                int fromBundle = AddBundleAirframes(templates);
 
-                // Remember every scene airframe (prefab asset + its loadout) for later missions.
-                for (int i = 0; i < templates.Count; i++)
+                if (fromBundle == 0)
                 {
-                    if (templates[i].Loadout != null)
+                    // No bundle roster. The old scene path is the only thing left that can fill a slot,
+                    // and it is known to be unreliable, so it is used (a slot that might send nothing
+                    // beats a slot that definitely sends nothing) but reported loudly.
+                    Log.Error("CAS roster: the cas_assets catalogue is empty, so this mission falls back to " +
+                              "the SCENE scan. Aircraft from the scene may be cloned objects whose " +
+                              "CASController.Start() never runs, which is the known cause of a CAS call " +
+                              "that spawns nothing. Check the 'CAS airframe catalogue' / 'CAS pre-warm' " +
+                              "lines above.");
+                    if (manager != null)
                     {
-                        Cache(templates[i].Prefab, templates[i].Loadout, "scene '" + templates[i].Name + "'");
+                        AddSceneAirframes(templates, manager.BlueCasAirframes, Faction.Blue);
+                        AddSceneAirframes(templates, manager.RedCasAirframes, Faction.Red);
                     }
-                }
-
-                // Always supplement from the session cache and the loaded assets, not just when the
-                // player's own faction is missing. This keeps every airframe (including the GunRun
-                // preference A-10 / MiG-23BN) available even when the mission only carries other
-                // aircraft, and keeps the template list complete for the auto-by-faction selection.
-                {
-                    int before = templates.Count;
-
-                    for (int i = 0; i < _cache.Count; i++)
-                    {
-                        CachedTemplate cached = _cache[i];
-                        if (cached.Prefab == null || cached.Loadout == null)
-                        {
-                            continue; // destroyed (a scene object that was unloaded): skip
-                        }
-                        AddCandidate(templates, cached.Prefab, cached.Loadout, Faction.Neutral,
-                            "session cache from " + cached.Source, false);
-                    }
-
                     ScanLoadedObjects(templates);
-
-                    if (templates.Count > before)
-                    {
-                        Log.Verbose("CAS donor scan added " + (templates.Count - before) + " template(s).");
-                    }
+                    return templates;
                 }
 
+                // Supplement with the mission's OWN loadouts, paired onto the bundle's airframes only.
+                int before = templates.Count;
+                int sceneLoadouts = AddSceneLoadouts(templates);
+                if (sceneLoadouts > 0)
+                {
+                    Log.Verbose("CAS roster: " + sceneLoadouts + " extra loadout pairing(s) from the mission " +
+                                "scene added onto the bundle airframes (" + (templates.Count - before) +
+                                " template(s)).");
+                }
+
+                Log.Verbose("CAS roster: " + fromBundle + " bundle template(s), " + templates.Count +
+                            " in total; every AIRFRAME is a bundled prefab asset.");
                 return templates;
             }
             finally
@@ -150,26 +145,163 @@ namespace CustomFireSupport
             }
         }
 
-        private static void Cache(GameObject prefab, CASLoadoutScriptable loadout, string source)
+        /// <summary>
+        /// Pares each loadout the mission itself has in memory onto the BUNDLE's airframes.
+        ///
+        /// Only loadouts cross over - the airframe loop is driven by the bundle catalogue, so nothing
+        /// here can introduce a scene prefab. This is what preserves "mount a payload the bundle does
+        /// not ship" without reintroducing the unreliable scene airframe.
+        ///
+        /// Returns the number of extra templates contributed.
+        /// </summary>
+        private static int AddSceneLoadouts(List<CasTemplate> templates)
         {
-            if (prefab == null || loadout == null)
+            List<CASLoadoutScriptable> sceneLoadouts = new List<CASLoadoutScriptable>();
+
+            try
             {
-                return;
-            }
-            for (int i = 0; i < _cache.Count; i++)
-            {
-                if (ReferenceEquals(_cache[i].Prefab, prefab) && ReferenceEquals(_cache[i].Loadout, loadout))
+                CASLoadoutScriptable[] loaded = Resources.FindObjectsOfTypeAll<CASLoadoutScriptable>();
+                for (int i = 0; i < loaded.Length; i++)
                 {
-                    return;
+                    CASLoadoutScriptable loadout = loaded[i];
+                    if (loadout == null || loadout.Loadout == null || loadout.Loadout.HardpointPrefabs == null ||
+                        loadout.Loadout.HardpointPrefabs.Length == 0)
+                    {
+                        continue;
+                    }
+                    bool known = false;
+                    for (int j = 0; j < sceneLoadouts.Count; j++)
+                    {
+                        if (ReferenceEquals(sceneLoadouts[j], loadout))
+                        {
+                            known = true;
+                            break;
+                        }
+                    }
+                    if (!known)
+                    {
+                        sceneLoadouts.Add(loadout);
+                    }
                 }
             }
-            _cache.Add(new CachedTemplate { Prefab = prefab, Loadout = loadout, Source = source });
-            Log.Verbose("CAS template cached for later missions: '" + prefab.name + "' + loadout '" + loadout.name +
-                        "' (" + source + "; " + _cache.Count + " cached)");
+            catch (Exception ex)
+            {
+                Log.Warn("CAS roster: could not read the mission's loadouts: " + ex.Message);
+                return 0;
+            }
+
+            if (sceneLoadouts.Count == 0)
+            {
+                return 0;
+            }
+
+            List<GameObject> airframes = CasPrewarmer.BundleAirframePrefabs();
+            int added = 0;
+
+            for (int i = 0; i < airframes.Count; i++)
+            {
+                GameObject prefab = airframes[i];
+                if (prefab == null)
+                {
+                    continue;
+                }
+                CASHardpointManager manager = prefab.GetComponentInChildren<CASHardpointManager>(true);
+                if (manager == null)
+                {
+                    continue;
+                }
+
+                for (int j = 0; j < sceneLoadouts.Count; j++)
+                {
+                    // AddCandidate drops anything that does not fit this airframe, and skips pairs that
+                    // are already in the list, so re-adding a bundled loadout here is harmless.
+                    added += AddCandidate(templates, prefab, sceneLoadouts[j], Faction.Neutral,
+                        "bundle airframe + mission loadout", true, manager);
+                }
+            }
+            return added;
+        }
+
+        /// <summary>
+        /// Adds one template per bundled airframe x bundled loadout that fits it, straight from the
+        /// name-keyed catalogue (CasPrewarmer.BundleAirframeNames / AirframePrefab / LoadoutAsset).
+        ///
+        /// These are guaranteed to be prefab ASSETS rather than scene instances, which is what makes the
+        /// aircraft actually reach CASController.Start(). Returns how many templates were added.
+        /// </summary>
+        private static int AddBundleAirframes(List<CasTemplate> templates)
+        {
+            if (!CasPrewarmer.HasBundleAirframes)
+            {
+                // The bundle has not been pre-warmed yet (or failed to load). Fall back to the scene,
+                // which is the old - less reliable - path. Reported because it is the state in which
+                // "the aircraft sometimes does not appear" can still happen.
+                Log.Warn("CAS roster: the cas_assets catalogue is not loaded yet; falling back to the scene " +
+                         "scan for this mission. If CAS calls spawn nothing, this is why - the bundle failed " +
+                         "to pre-warm (see the 'CAS pre-warm' lines above).");
+                return 0;
+            }
+
+            List<GameObject> airframes = CasPrewarmer.BundleAirframePrefabs();
+            List<CASLoadoutScriptable> loadouts = CasPrewarmer.BundleLoadouts();
+            int added = 0;
+
+            for (int i = 0; i < airframes.Count; i++)
+            {
+                GameObject prefab = airframes[i];
+                if (prefab == null)
+                {
+                    continue;
+                }
+
+                CASHardpointManager manager = prefab.GetComponentInChildren<CASHardpointManager>(true);
+                if (manager == null)
+                {
+                    // Without a hardpoint manager the aircraft cannot mount or fire anything, and
+                    // CASController.Start() would fail on it. The bundle builder already rejects this,
+                    // so reaching here means a hand-edited bundle.
+                    Log.Error("CAS roster: bundled airframe '" + prefab.name + "' has no CASHardpointManager; " +
+                              "it cannot fire and is skipped. Rebuild the bundle with CasBundleRebuild.");
+                    continue;
+                }
+
+                // The airframe's own loadout first, so the slot can fly the model's real pylons.
+                CASLoadoutScriptable own = null;
+                try
+                {
+                    own = HardpointManagerLoadoutRef(manager);
+                }
+                catch (Exception ex)
+                {
+                    Log.Verbose("could not read '" + prefab.name + "'s own loadout: " + ex.Message);
+                }
+
+                if (own != null && own.Loadout != null && own.Loadout.HardpointPrefabs != null &&
+                    own.Loadout.HardpointPrefabs.Length > 0)
+                {
+                    added += AddCandidate(templates, prefab, own, Faction.Neutral, "bundled airframe", true, manager);
+                }
+
+                // Cross-pairs stay on offer: mounting a type the model does not ship with is how a rocket
+                // slot finds a loadout when the airframe has none of its own. FitsAirframe still has to
+                // accept the pair, and an airframe flying its own loadout is preferred.
+                for (int j = 0; j < loadouts.Count; j++)
+                {
+                    CASLoadoutScriptable loadout = loadouts[j];
+                    if (loadout == null || ReferenceEquals(loadout, own) || loadout.Loadout == null ||
+                        loadout.Loadout.HardpointPrefabs == null || loadout.Loadout.HardpointPrefabs.Length == 0)
+                    {
+                        continue;
+                    }
+                    added += AddCandidate(templates, prefab, loadout, Faction.Neutral, "bundled airframe", true, manager);
+                }
+            }
+
+            return added;
         }
 
         // ------------------------------------------------------------------
-        // 1. Mission scene airframes
+        // Emergency scene fallback (only used when the bundle roster is empty)
         // ------------------------------------------------------------------
 
         private static void AddSceneAirframes(List<CasTemplate> templates, CasAirframeUnit[] airframes, Faction faction)
@@ -206,19 +338,7 @@ namespace CustomFireSupport
                 if (loadout != null && loadout.Loadout != null && loadout.Loadout.HardpointPrefabs != null &&
                     loadout.Loadout.HardpointPrefabs.Length > 0)
                 {
-                    bool duplicate = false;
-                    for (int j = 0; j < loadouts.Count; j++)
-                    {
-                        if (ReferenceEquals(loadouts[j], loadout))
-                        {
-                            duplicate = true;
-                            break;
-                        }
-                    }
-                    if (!duplicate)
-                    {
-                        loadouts.Add(loadout);
-                    }
+                    loadouts.Add(loadout);
                 }
             }
 
@@ -290,86 +410,25 @@ namespace CustomFireSupport
                         "loaded airframe" + (donorIsAsset[i] ? " prefab" : string.Empty), donorIsAsset[i], manager);
                 }
 
-                List<CASLoadoutScriptable> matches = FindLoadoutMatches(donor, manager, own, loadouts);
-                for (int j = 0; j < matches.Count; j++)
+                // Cross-pairs (this airframe + some OTHER airframe's loadout) stay on offer: that is how a
+                // slot can mount a type the airframe does not ship with. FitsAirframe still has to accept
+                // the pair, and the draw pool prefers an airframe flying its OWN loadout, so a cross-pair
+                // is only ever reached when nothing better exists.
+                for (int j = 0; j < loadouts.Count; j++)
                 {
-                    AddCandidate(templates, donor, matches[j], Faction.Neutral,
+                    if (ReferenceEquals(loadouts[j], own))
+                    {
+                        continue;
+                    }
+                    AddCandidate(templates, donor, loadouts[j], Faction.Neutral,
                         "loaded airframe" + (donorIsAsset[i] ? " prefab" : string.Empty), donorIsAsset[i], manager);
                 }
 
-                if (own == null && matches.Count == 0)
+                if (own == null && loadouts.Count == 0)
                 {
-                    Log.Verbose("loaded airframe '" + donor.name +
-                                "' has no loadout whose name identifies this aircraft - skipped.");
+                    Log.Verbose("loaded airframe '" + donor.name + "' has no usable loadout asset - skipped.");
                 }
             }
-        }
-
-        /// <summary>
-        /// Returns only loadouts that identify the scanned aircraft. Pairing every aircraft with every
-        /// loaded loadout is mechanically tempting, but it creates hundreds of cross-aircraft pylons
-        /// (and lets a Pact aircraft receive a NATO pod). A loadout carried by the manager is always
-        /// authoritative; the name match is only the fallback used by exported bundle prefabs whose
-        /// serialized manager field is empty.
-        /// </summary>
-        private static List<CASLoadoutScriptable> FindLoadoutMatches(GameObject donor,
-            CASHardpointManager manager, CASLoadoutScriptable own, List<CASLoadoutScriptable> loadouts)
-        {
-            List<CASLoadoutScriptable> matches = new List<CASLoadoutScriptable>();
-            if (own != null && own.Loadout != null && own.Loadout.HardpointPrefabs != null &&
-                own.Loadout.HardpointPrefabs.Length > 0)
-            {
-                return matches;
-            }
-
-            string airframeName = donor == null ? string.Empty : donor.name;
-            int attachPoints = AttachCount(manager);
-            for (int i = 0; i < loadouts.Count; i++)
-            {
-                CASLoadoutScriptable loadout = loadouts[i];
-                if (loadout == null || loadout.Loadout == null || loadout.Loadout.HardpointPrefabs == null ||
-                    loadout.Loadout.HardpointPrefabs.Length == 0 || ReferenceEquals(loadout, own))
-                {
-                    continue;
-                }
-
-                if (!LoadoutNamesMatchAirframe(airframeName, loadout.name))
-                {
-                    continue;
-                }
-
-                int count = loadout.Loadout.HardpointPrefabs.Length;
-                if (attachPoints > 0 && count != 1 && count < attachPoints)
-                {
-                    continue;
-                }
-                matches.Add(loadout);
-            }
-            return matches;
-        }
-
-        private static bool LoadoutNamesMatchAirframe(string airframeName, string loadoutName)
-        {
-            if (string.IsNullOrEmpty(airframeName) || string.IsNullOrEmpty(loadoutName))
-            {
-                return false;
-            }
-
-            string airframe = NormalizeIdentity(airframeName);
-            string loadout = NormalizeIdentity(loadoutName);
-            string[] modelTokens =
-            {
-                "a10", "f104", "f15", "f4", "mig17", "mig21", "mig23bn", "mig23", "su22", "su25"
-            };
-            for (int i = 0; i < modelTokens.Length; i++)
-            {
-                string token = modelTokens[i];
-                if (airframe.Contains(token) && loadout.Contains(token))
-                {
-                    return true;
-                }
-            }
-            return false;
         }
         /// <summary>
         /// True when the object (or an ancestor) is a real CAS aircraft: it either carries a
@@ -482,7 +541,7 @@ namespace CustomFireSupport
         // Candidate list helpers
         // ------------------------------------------------------------------
 
-        private static void AddCandidate(
+        private static int AddCandidate(
             List<CasTemplate> templates,
             GameObject prefab,
             CASLoadoutScriptable loadout,
@@ -490,11 +549,11 @@ namespace CustomFireSupport
             string source,
             bool isAsset)
         {
-            AddCandidate(templates, prefab, loadout, faction, source, isAsset,
+            return AddCandidate(templates, prefab, loadout, faction, source, isAsset,
                 prefab != null ? prefab.GetComponentInChildren<CASHardpointManager>(true) : null);
         }
 
-        private static void AddCandidate(
+        private static int AddCandidate(
             List<CasTemplate> templates,
             GameObject prefab,
             CASLoadoutScriptable loadout,
@@ -505,7 +564,27 @@ namespace CustomFireSupport
         {
             if (prefab == null || loadout == null || loadout.Loadout == null)
             {
-                return;
+                return 0;
+            }
+
+            // HARD ROSTER GUARD (option B): an airframe that is not one of the bundle's own prefabs may
+            // not enter the pool at all.
+            //
+            // Every candidate is checked here rather than at each call site, because this is the single
+            // door into the template list - so no future path can quietly reintroduce a scene airframe.
+            // A scene airframe is a LIVE object: Instantiating it clones something whose
+            // CASController.Start() does not run, which is the known cause of a CAS call that sends
+            // nothing. Loadouts are deliberately NOT restricted this way (a loadout is only read).
+            //
+            // The bundle may exist without the catalogue being built (an older cas_assets), in which
+            // case IsBundledAirframe cannot answer and the guard stays out of the way rather than
+            // emptying every slot.
+            if (CasPrewarmer.HasBundleAirframes && !CasPrewarmer.IsBundledAirframe(prefab))
+            {
+                Log.Verbose("CAS template skipped: airframe '" + prefab.name + "' (" + source +
+                            ") is not one of the bundle's prefabs, so it is not eligible (" +
+                            CasPrewarmer.BundleAirframeNames.Length + " bundled airframe(s) only).");
+                return 0;
             }
 
             // An airframe without a CASHardpointManager can never be configured: CASController.SetLoadout
@@ -515,7 +594,7 @@ namespace CustomFireSupport
             {
                 Log.Verbose("CAS template skipped: airframe '" + prefab.name +
                             "' carries no CASHardpointManager, so it could never fire.");
-                return;
+                return 0;
             }
 
             // Reject airframe/loadout pairs the game cannot configure.
@@ -531,14 +610,15 @@ namespace CustomFireSupport
                 Log.Verbose("CAS template skipped: loadout '" + loadout.name + "' (" +
                             Count(loadout.Loadout.HardpointPrefabs) + " hardpoint prefab(s)) does not fit airframe '" +
                             prefab.name + "' (" + AttachCount(manager) + " attach point(s)).");
-                return;
+                return 0;
             }
 
-            // A prefab asset that fits is worth keeping for the rest of the session (scene instances
-            // are not: they are destroyed when their scene unloads).
-            if (isAsset)
+            for (int i = 0; i < templates.Count; i++)
             {
-                Cache(prefab, loadout, source);
+                if (ReferenceEquals(templates[i].Prefab, prefab) && ReferenceEquals(templates[i].Loadout, loadout))
+                {
+                    return 0;
+                }
             }
 
             string name = string.IsNullOrEmpty(prefab.name) ? "(unnamed airframe)" : prefab.name;
@@ -551,13 +631,6 @@ namespace CustomFireSupport
                 effectiveFaction = FireSupportTemplates.ToFaction(CasAirframeCatalog.GuessSide(name));
             }
 
-            AttackKind[] mounted = CollectMountedAttacks(loadout.Loadout);
-            if (HasEquivalentCandidate(templates, name, loadout.name, mounted,
-                                       Count(loadout.Loadout.HardpointPrefabs), AttachCount(manager)))
-            {
-                return;
-            }
-
             templates.Add(new CasTemplate
             {
                 Prefab = prefab,
@@ -566,88 +639,13 @@ namespace CustomFireSupport
                 LoadoutName = string.IsNullOrEmpty(loadout.name) ? "(unnamed loadout)" : loadout.name,
                 Faction = effectiveFaction,
                 AvailableAttacks = FireSupportTemplates.CollectAttackTypes(loadout.Loadout),
-                MountedAttacks = mounted,
+                MountedAttacks = CollectMountedAttacks(loadout.Loadout),
                 HardpointCount = Count(loadout.Loadout.HardpointPrefabs),
                 AttachPointCount = AttachCount(manager),
                 Source = source,
                 IsAsset = isAsset
             });
-        }
-
-        private static bool HasEquivalentCandidate(List<CasTemplate> templates, string prefabName,
-            string loadoutName, AttackKind[] mounted, int hardpointCount, int attachPointCount)
-        {
-            string key = CandidateKey(prefabName, loadoutName, mounted, hardpointCount, attachPointCount);
-            for (int i = 0; i < templates.Count; i++)
-            {
-                CasTemplate existing = templates[i];
-                if (CandidateKey(existing.Name, existing.LoadoutName, existing.MountedAttacks,
-                                 existing.HardpointCount, existing.AttachPointCount) == key)
-                {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        private static string CandidateKey(string prefabName, string loadoutName, AttackKind[] mounted,
-            int hardpointCount, int attachPointCount)
-        {
-            StringBuilder key = new StringBuilder();
-            key.Append(NormalizeIdentity(prefabName)).Append('|')
-               .Append(NormalizeLoadoutIdentity(loadoutName)).Append('|')
-               .Append(hardpointCount).Append('|').Append(attachPointCount).Append('|');
-            if (mounted != null)
-            {
-                for (int i = 0; i < mounted.Length; i++)
-                {
-                    key.Append((int)mounted[i]).Append(',');
-                }
-            }
-            return key.ToString();
-        }
-
-        private static string NormalizeLoadoutIdentity(string value)
-        {
-            return string.IsNullOrEmpty(value) || value == "(unnamed loadout)"
-                ? string.Empty
-                : NormalizeIdentity(value);
-        }
-
-        private static string NormalizeIdentity(string value)
-        {
-            if (string.IsNullOrEmpty(value))
-            {
-                return string.Empty;
-            }
-            value = StripUnityDuplicateSuffix(value);
-            StringBuilder result = new StringBuilder(value.Length);
-            for (int i = 0; i < value.Length; i++)
-            {
-                char c = char.ToLowerInvariant(value[i]);
-                if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))
-                {
-                    result.Append(c);
-                }
-            }
-            return result.ToString();
-        }
-
-        private static string StripUnityDuplicateSuffix(string value)
-        {
-            int open = value.LastIndexOf(" (");
-            if (open < 0 || value[value.Length - 1] != ')')
-            {
-                return value;
-            }
-            for (int i = open + 2; i < value.Length - 1; i++)
-            {
-                if (value[i] < '0' || value[i] > '9')
-                {
-                    return value;
-                }
-            }
-            return value.Substring(0, open);
+            return 1;
         }
 
         /// <summary>
@@ -662,10 +660,17 @@ namespace CustomFireSupport
                 return false;
             }
 
-            // No hardpoint manager on the donor (e.g. a partially loaded prefab): nothing to check.
-            if (manager == null || manager.HardpointAttachPoints == null || manager.HardpointAttachPoints.Length == 0)
+            // No measurable attach points on the donor: the fit CANNOT be decided, and an undecidable
+            // pair is exactly the one that spawns nothing. The game's own check is
+            // "HardpointPrefabs.Length < HardpointAttachPoints.Length && Length > 1", and with an
+            // unknown attach-point count that comparison silently passes here while the real
+            // CASHardpointManager may still refuse to configure the sortie. Reject it instead: the
+            // caller falls back to the unvalidated list and reports it, rather than shipping a pair
+            // that looks fine and comes back empty.
+            if (manager == null || manager.HardpointAttachPoints == null ||
+                manager.HardpointAttachPoints.Length == 0)
             {
-                return true;
+                return false;
             }
 
             int prefabs = loadout.HardpointPrefabs.Length;
@@ -674,8 +679,9 @@ namespace CustomFireSupport
         }
 
         /// <summary>
-        /// Returns only attack types backed by usable physical hardpoints. Metadata-only attack entries
-        /// affect target selection but cannot make CASHardpointManager fire a weapon.
+        /// Returns only attack types physically mounted by the loadout.  CASAttackMeta is intentionally
+        /// kept separate: GHPC uses it to choose an attack, but CASHardpointManager.CanDoAttackType()
+        /// ultimately checks the instantiated hardpoints, so a metadata-only entry cannot fire.
         /// </summary>
         private static AttackKind[] CollectMountedAttacks(CASLoadout loadout)
         {

@@ -39,144 +39,193 @@ namespace CustomFireSupport
             internal readonly Dictionary<string, Vector4> Vectors = new Dictionary<string, Vector4>();
         }
 
-        private static Dictionary<string, Recipe> _recipes;
+        private static Dictionary<string, List<Recipe>> _recipes;
         private static Dictionary<string, Texture> _textures;
         private static bool _done;
 
+        /// <summary>
+        /// True once a full pass left no material on a bundled approximation, i.e. once a later scene's
+        /// sweep of every material and shader in memory cannot change any decision (see
+        /// <see cref="RepairBundleMaterials"/>).
+        /// </summary>
+        private static bool _everythingResolved;
+
+        private static readonly Dictionary<string, Material> GameMaterials = new Dictionary<string, Material>(StringComparer.Ordinal);
+        private static readonly Dictionary<string, Shader> GameShaders = new Dictionary<string, Shader>(StringComparer.Ordinal);
+        private static readonly HashSet<Material> Restored = new HashSet<Material>();
+        private static readonly HashSet<Renderer> HiddenDistortion = new HashSet<Renderer>();
+        private static readonly HashSet<string> RequiredMaterials = new HashSet<string>(StringComparer.Ordinal);
+        private static readonly HashSet<string> RequiredTextures = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<Shader, Dictionary<string, ShaderPropertyType>> ShaderProperties =
+            new Dictionary<Shader, Dictionary<string, ShaderPropertyType>>();
+
         internal static void ClearSceneIndex()
         {
-            _done = false;
+            // The per-scene texture cache is dropped, but the NATIVE DONOR INDEX is deliberately kept. It
+            // holds at most one material per bundled material name - about eighty game ASSETS, never scene
+            // objects - and it is what CasMissileVisualRepair adopts materials from when a round spawns,
+            // so throwing it away would make the per-instance repair go blind until the next scan.
+            // Rebuilding it costs two Resources.FindObjectsOfTypeAll sweeps of every loaded material and
+            // shader; keeping it is what lets RepairBundleMaterials skip those sweeps once nothing is left
+            // on a bundled approximation.
             _textures = null;
+            _done = false;
         }
 
         internal static void RefreshForScene()
         {
             _done = false;
             _textures = null;
+            CasMissileVisualRepair.ResetForScene();
             RepairBundleMaterials();
         }
 
-        /// <summary>
-        /// Runs once per session, right after the bundle is loaded. Safe to call again: it does nothing.
-        /// </summary>
+        internal static Material FindGameMaterial(string name)
+        {
+            Material material;
+            return GameMaterials.TryGetValue(name, out material) && material != null ? material : null;
+        }
+
+        private static Shader FindGameShader(string name)
+        {
+            Shader shader;
+            if (GameShaders.TryGetValue(name, out shader) && shader != null) return shader;
+            shader = Shader.Find(name);
+            return shader != null && shader.isSupported && !CasPrewarmer.BundleShaders.Contains(shader)
+                ? shader : null;
+        }
+
+        /// <summary>One scan at load, then retry unresolved materials after scene content is ready.</summary>
         internal static void RepairBundleMaterials()
         {
-            if (_done)
-            {
-                return;
-            }
-            _done = true;
-
+            if (_done || CasPrewarmer.BundleMaterials.Count == 0) return;
             try
             {
                 EnsureRecipes();
-                if (_recipes.Count == 0)
+                if (_everythingResolved)
                 {
-                    Log.Warn("CAS material repair: no material recipe found in this build - the bundled " +
-                             "materials keep their simplified shaders.");
+                    // Every bundled material already sits on one of the game's own shaders, so a fresh
+                    // sweep of every material and shader in memory cannot change a single decision. This
+                    // is what keeps two Resources.FindObjectsOfTypeAll passes off every later scene load:
+                    // a session opens half a dozen scenes, and each one used to rescan the whole game to
+                    // find nothing. The renderer pass below is idempotent and still has to run once.
+                    int stillHidden = ApplyRendererPass();
+                    _done = true;
+                    Log.Verbose("CAS material repair: skipped (nothing is left on a bundled approximation); " +
+                                stillHidden + " TVE helper renderer(s) disabled.");
                     return;
                 }
 
-                int materials = 0;
-                int restored = 0;
-                int recovered = 0;
-                int approximated = 0;
-                int unknown = 0;
-                int hidden = 0;
+                GameShaders.Clear();
+                GameMaterials.Clear();
+                RequiredMaterials.Clear();
+                foreach (Material material in CasPrewarmer.BundleMaterials)
+                    if (material != null) RequiredMaterials.Add(material.name);
+                foreach (Shader shader in Resources.FindObjectsOfTypeAll<Shader>())
+                {
+                    if (shader != null && shader.isSupported && !CasPrewarmer.BundleShaders.Contains(shader))
+                        GameShaders[shader.name] = shader;
+                }
+                foreach (Material material in Resources.FindObjectsOfTypeAll<Material>())
+                {
+                    if (material == null || !RequiredMaterials.Contains(material.name) ||
+                        CasPrewarmer.IsFromOurBundle(material) || material.shader == null ||
+                        !material.shader.isSupported || CasPrewarmer.BundleShaders.Contains(material.shader) ||
+                        material.shader.name.StartsWith(FallbackShaderPrefix, StringComparison.Ordinal)) continue;
+                    if (!GameMaterials.ContainsKey(material.name)) GameMaterials.Add(material.name, material);
+                }
+
+                int restored = 0, recovered = 0, approximated = 0, unknown = 0;
                 List<string> missingShaders = new List<string>();
-                HashSet<Material> seen = new HashSet<Material>();
-                List<GameObject> prefabs = CasPrewarmer.BundlePrefabs;
-
-                for (int p = 0; p < prefabs.Count; p++)
+                foreach (Material material in CasPrewarmer.BundleMaterials)
                 {
-                    GameObject prefab = prefabs[p];
-                    if (prefab == null)
+                    if (material == null) continue;
+                    if (Restored.Contains(material) && material.shader != null && material.shader.isSupported) continue;
+                    Restored.Remove(material);
+                    Recipe recipe = RecipeFor(material);
+                    Material donor = FindGameMaterial(material.name);
+                    if (donor != null && (recipe == null || (donor.shader.name == recipe.Shader &&
+                        (string.IsNullOrEmpty(recipe.MainTexture) || HasTextureNamed(donor, recipe.MainTexture)))))
                     {
-                        continue;
+                        material.shader = donor.shader;
+                        material.CopyPropertiesFromMaterial(donor);
+                        material.renderQueue = donor.renderQueue;
+                        Restored.Add(material);
+                        restored++;
                     }
-
-                    Renderer[] renderers = prefab.GetComponentsInChildren<Renderer>(true);
-                    for (int r = 0; r < renderers.Length; r++)
+                    else if (recipe != null && RestoreWithGameShader(material, recipe, missingShaders))
                     {
-                        Renderer renderer = renderers[r];
-                        if (renderer == null)
-                        {
-                            continue;
-                        }
-
-                        if (IsTveElement(renderer))
-                        {
-                            // GHPC's effects use Boxophobic "The Visual Engine" push-interaction elements
-                            // (wind turbulence) as helpers. In the game they are driven by TVE's own global
-                            // state and only ever show as a subtle distortion; loaded from the bundle they
-                            // draw their raw sheet instead - "Explosion Wind Turbulence (TVE)" is a
-                            // horizontal billboard field whose particles reach 200 m, which is exactly the
-                            // big flat translucent panels that float around the smoke. Pushing the smoke
-                            // particles does not need the renderer, so it is switched off.
-                            renderer.enabled = false;
-                            hidden++;
-                            continue;
-                        }
-
-                        Material[] shared = renderer.sharedMaterials;
-                        for (int m = 0; m < shared.Length; m++)
-                        {
-                            Material material = shared[m];
-                            if (material == null || !seen.Add(material))
-                            {
-                                continue;
-                            }
-                            materials++;
-
-                            Recipe recipe;
-                            if (!_recipes.TryGetValue(material.name, out recipe))
-                            {
-                                // No recipe: the material came with a newer asset (the composed missile
-                                // prefabs). The bundle is packed from an AssetRipper export, where every
-                                // placeholder shader keeps the ORIGINAL shader's name, so the game's real
-                                // shader can still be found - and the material's own exported properties
-                                // are already on it. Without this the material would render pure white.
-                                if (RecoverByPlaceholderName(material, missingShaders))
-                                {
-                                    recovered++;
-                                }
-                                else
-                                {
-                                    unknown++;
-                                }
-                                continue;
-                            }
-
-                            if (RestoreWithGameShader(material, recipe, missingShaders))
-                            {
-                                restored++;
-                            }
-                            else
-                            {
-                                ApplyFallback(material, recipe);
-                                approximated++;
-                            }
-                        }
+                        Restored.Add(material);
+                        restored++;
                     }
+                    else if (recipe != null)
+                    {
+                        if (ApplyFallback(material, recipe)) approximated++;
+                        else unknown++;
+                    }
+                    else if (RecoverByPlaceholderName(material, missingShaders))
+                    {
+                        Restored.Add(material);
+                        recovered++;
+                    }
+                    else unknown++;
                 }
-
-                Log.Info("CAS material repair: " + restored + " of " + materials + " bundled material(s) rebuilt " +
-                         "with the game's own shaders" +
-                         (recovered > 0
-                             ? ", " + recovered + " more recovered from their placeholder shader's name (new assets)"
-                             : string.Empty) +
-                         (approximated > 0 ? ", " + approximated + " fell back to the bundled flipbook shader" : string.Empty) +
-                         (unknown > 0 ? ", " + unknown + " had no recipe" : string.Empty) + ".");
+                int hidden = ApplyRendererPass();
+                _done = true;
+                // "approximated" and "unresolved" are the materials that are NOT on a game shader; a later
+                // scene may have the native material or shader loaded by then, so only while one of those
+                // is left does the next scene need to scan again.
+                _everythingResolved = approximated == 0 && unknown == 0;
+                Log.Info("CAS material repair: " + CasPrewarmer.BundleMaterials.Count + " dependency material(s), " +
+                    restored + " restored, " + recovered + " recovered by shader name, " + approximated +
+                    " fallback, " + unknown + " unresolved; " + hidden + " TVE helper renderer(s) disabled.");
                 if (missingShaders.Count > 0)
-                {
-                    Log.Warn("CAS material repair: these shaders are not in this build, so those materials use the " +
-                             "approximation: " + string.Join(", ", missingShaders.ToArray()));
-                }
+                    Log.Warn("CAS material repair: waiting for native shaders: " + string.Join(", ", missingShaders.ToArray()));
             }
             catch (Exception ex)
             {
                 Log.Error("CAS material repair failed: " + ex);
             }
+            finally
+            {
+                // Only the few native material donors are needed by later missile spawns.
+                // Drop temporary texture/shader indexes even when a repair failed partway through.
+                _textures = null;
+                GameShaders.Clear();
+                ShaderProperties.Clear();
+            }
+        }
+
+        /// <summary>
+        /// A heat-distortion map cannot be displayed by a plain colour/alpha shader. Keep smoke/fire
+        /// visible; suppress only these helper renderers until native binding succeeds. Idempotent: a
+        /// renderer that stops being approximated is switched back on. Returns how many are disabled.
+        /// </summary>
+        private static int ApplyRendererPass()
+        {
+            int hidden = 0;
+            foreach (Renderer renderer in CasPrewarmer.BundleRenderers)
+            {
+                if (renderer == null) continue;
+                if (IsTveElement(renderer))
+                {
+                    renderer.enabled = false;
+                    hidden++;
+                    continue;
+                }
+                Material material = renderer.sharedMaterial;
+                bool approximate = material != null && material.shader != null &&
+                    material.shader.name.StartsWith(FallbackShaderPrefix, StringComparison.Ordinal) &&
+                    (renderer.name.IndexOf("distortion", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     material.name.IndexOf("distortion", StringComparison.OrdinalIgnoreCase) >= 0);
+                if (approximate && renderer.enabled)
+                {
+                    renderer.enabled = false;
+                    HiddenDistortion.Add(renderer);
+                }
+                else if (!approximate && HiddenDistortion.Remove(renderer)) renderer.enabled = true;
+            }
+            return hidden;
         }
 
         /// <summary>
@@ -220,7 +269,7 @@ namespace CustomFireSupport
                 return false;
             }
 
-            Shader real = Shader.Find(name);
+            Shader real = FindGameShader(name);
             if (real == null || ReferenceEquals(real, current))
             {
                 if (real == null && !missingShaders.Contains(name))
@@ -231,6 +280,7 @@ namespace CustomFireSupport
             }
 
             material.shader = real;
+            material.renderQueue = -1;
             return true;
         }
 
@@ -240,7 +290,7 @@ namespace CustomFireSupport
         /// </summary>
         private static bool RestoreWithGameShader(Material material, Recipe recipe, List<string> missingShaders)
         {
-            Shader shader = Shader.Find(recipe.Shader);
+            Shader shader = FindGameShader(recipe.Shader);
             if (shader == null)
             {
                 if (!missingShaders.Contains(recipe.Shader))
@@ -252,54 +302,38 @@ namespace CustomFireSupport
 
             material.shader = shader;
 
-            HashSet<string> properties = new HashSet<string>();
-            int count = shader.GetPropertyCount();
-            for (int i = 0; i < count; i++)
-            {
-                properties.Add(shader.GetPropertyName(i));
-            }
-
             foreach (KeyValuePair<string, string> pair in recipe.Textures)
             {
-                if (!properties.Contains(pair.Key))
-                {
-                    continue;
-                }
-                Texture texture = FindTexture(pair.Value);
-                if (texture != null)
-                {
-                    material.SetTexture(pair.Key, texture);
-                }
+                if (!material.HasProperty(pair.Key)) continue;
+                // Keep the exact bundled texture reference when present; names need not be unique.
+                Texture texture = material.GetTexture(pair.Key);
+                if (texture == null || !string.Equals(texture.name, pair.Value, StringComparison.Ordinal))
+                    texture = FindTexture(pair.Value);
+                if (texture != null) material.SetTexture(pair.Key, texture);
             }
 
-            int propertyIndex;
+            Dictionary<string, ShaderPropertyType> properties = GetProperties(shader);
+            ShaderPropertyType type;
             foreach (KeyValuePair<string, float> pair in recipe.Floats)
             {
-                if (properties.Contains(pair.Key))
-                {
-                    material.SetFloat(pair.Key, pair.Value);
-                    continue;
-                }
-                // a vector property whose components are all the same arrives as a float
-                propertyIndex = IndexOf(shader, pair.Key);
-                if (propertyIndex >= 0 && shader.GetPropertyType(propertyIndex) == ShaderPropertyType.Vector)
-                {
+                if (!properties.TryGetValue(pair.Key, out type)) continue;
+                if (type == ShaderPropertyType.Vector)
                     material.SetVector(pair.Key, new Vector4(pair.Value, pair.Value, pair.Value, pair.Value));
-                }
+                else if (type == ShaderPropertyType.Float || type == ShaderPropertyType.Range)
+                    material.SetFloat(pair.Key, pair.Value);
             }
 
             foreach (KeyValuePair<string, Vector4> pair in recipe.Vectors)
             {
-                propertyIndex = IndexOf(shader, pair.Key);
-                if (propertyIndex < 0)
+                if (!properties.TryGetValue(pair.Key, out type))
                 {
                     continue;
                 }
-                if (shader.GetPropertyType(propertyIndex) == ShaderPropertyType.Color)
+                if (type == ShaderPropertyType.Color)
                 {
                     material.SetColor(pair.Key, new Color(pair.Value.x, pair.Value.y, pair.Value.z, pair.Value.w));
                 }
-                else if (shader.GetPropertyType(propertyIndex) == ShaderPropertyType.Vector)
+                else if (type == ShaderPropertyType.Vector)
                 {
                     material.SetVector(pair.Key, pair.Value);
                 }
@@ -308,6 +342,7 @@ namespace CustomFireSupport
             // Keywords drive whole branches of these shaders (particle alpha, blackbody emission,
             // flipbook single row, ...), so they are restored exactly as recorded.
             material.shaderKeywords = recipe.Keywords;
+            material.renderQueue = -1;
             return true;
         }
 
@@ -315,15 +350,17 @@ namespace CustomFireSupport
         /// The bundle's own flipbook shader with as much of the original material data as it understands:
         /// the atlas grid, the main texture and the tint.
         /// </summary>
-        private static void ApplyFallback(Material material, Recipe recipe)
+        private static bool ApplyFallback(Material material, Recipe recipe)
         {
             Shader current = material.shader;
             if (current == null || !current.name.StartsWith(FallbackShaderPrefix, StringComparison.Ordinal))
             {
-                return; // not one of ours - leave it alone
+                return false; // no compatible fallback is installed
             }
 
-            Texture main = FindTexture(recipe.MainTexture);
+            Texture main = material.GetTexture("_MainTex");
+            if (main == null || !string.Equals(main.name, recipe.MainTexture, StringComparison.Ordinal))
+                main = FindTexture(recipe.MainTexture);
             if (main != null)
             {
                 material.SetTexture("_MainTex", main);
@@ -341,28 +378,34 @@ namespace CustomFireSupport
                 material.SetFloat("_FPS", recipe.Fps);
             }
 
+            if (material.HasProperty("_PackedDensity"))
+                material.SetFloat("_PackedDensity", recipe.Shader.IndexOf("Channel Packed", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    recipe.Shader.IndexOf("Colorizer", StringComparison.OrdinalIgnoreCase) >= 0 ? 1f : 0f);
+
             Vector4 tint;
             if (!recipe.Vectors.TryGetValue("_HDRTint", out tint) &&
                 !recipe.Vectors.TryGetValue("_HDRColor", out tint) &&
                 !recipe.Vectors.TryGetValue("_Color", out tint))
             {
-                return;
+                return true;
             }
             material.SetColor("_TintColor", new Color(Mathf.Clamp01(tint.x), Mathf.Clamp01(tint.y),
                 Mathf.Clamp01(tint.z), 1f));
+            return true;
         }
 
-        private static int IndexOf(Shader shader, string property)
+        private static Dictionary<string, ShaderPropertyType> GetProperties(Shader shader)
         {
+            Dictionary<string, ShaderPropertyType> properties;
+            if (ShaderProperties.TryGetValue(shader, out properties)) return properties;
+            properties = new Dictionary<string, ShaderPropertyType>(StringComparer.Ordinal);
             int count = shader.GetPropertyCount();
             for (int i = 0; i < count; i++)
             {
-                if (string.Equals(shader.GetPropertyName(i), property, StringComparison.Ordinal))
-                {
-                    return i;
-                }
+                properties[shader.GetPropertyName(i)] = shader.GetPropertyType(i);
             }
-            return -1;
+            ShaderProperties.Add(shader, properties);
+            return properties;
         }
 
         private static Texture FindTexture(string name)
@@ -379,7 +422,7 @@ namespace CustomFireSupport
                 for (int i = 0; i < loaded.Length; i++)
                 {
                     Texture texture = loaded[i];
-                    if (texture != null && !_textures.ContainsKey(texture.name))
+                    if (texture != null && RequiredTextures.Contains(texture.name) && !_textures.ContainsKey(texture.name))
                     {
                         _textures.Add(texture.name, texture);
                     }
@@ -397,16 +440,49 @@ namespace CustomFireSupport
                 return;
             }
 
-            _recipes = new Dictionary<string, Recipe>(StringComparer.Ordinal);
-            string[] entries = CasMaterialRecipe.Entries;
+            _recipes = new Dictionary<string, List<Recipe>>(StringComparer.Ordinal);
+            string[] entries = new string[CasMaterialRecipe.Entries.Length + CasNativeMaterialRecipe.Entries.Length];
+            Array.Copy(CasMaterialRecipe.Entries, entries, CasMaterialRecipe.Entries.Length);
+            Array.Copy(CasNativeMaterialRecipe.Entries, 0, entries, CasMaterialRecipe.Entries.Length,
+                CasNativeMaterialRecipe.Entries.Length);
             for (int i = 0; i < entries.Length; i++)
             {
                 Recipe recipe = Parse(entries[i]);
                 if (recipe != null)
                 {
-                    _recipes[entries[i].Substring(0, entries[i].IndexOf('\t'))] = recipe;
+                    string name = entries[i].Substring(0, entries[i].IndexOf('\t'));
+                    List<Recipe> variants;
+                    if (!_recipes.TryGetValue(name, out variants))
+                    {
+                        variants = new List<Recipe>();
+                        _recipes.Add(name, variants);
+                    }
+                    variants.Add(recipe);
+                    foreach (string texture in recipe.Textures.Values) RequiredTextures.Add(texture);
                 }
             }
+        }
+
+        private static Recipe RecipeFor(Material material)
+        {
+            List<Recipe> variants;
+            if (!_recipes.TryGetValue(material.name, out variants)) return null;
+            if (variants.Count == 1) return variants[0];
+            // The source has several different materials called "Dust". Never let dump order
+            // assign a different material's texture/atlas to a renderer with the same name.
+            foreach (Recipe recipe in variants)
+                if (!string.IsNullOrEmpty(recipe.MainTexture) && HasTextureNamed(material, recipe.MainTexture)) return recipe;
+            return null;
+        }
+
+        private static bool HasTextureNamed(Material material, string name)
+        {
+            foreach (string property in material.GetTexturePropertyNames())
+            {
+                Texture texture = material.GetTexture(property);
+                if (texture != null && string.Equals(texture.name, name, StringComparison.Ordinal)) return true;
+            }
+            return false;
         }
 
         private static Recipe Parse(string line)
