@@ -255,4 +255,4 @@ implementation.
 Creative Commons (CC):
 
 - [Su-25](https://sketchfab.com/3d-models/su-25-88b71eb848cf4418a95dff497c07cefc)
-- [Su Kh-25ML (War Thunder)](https://sketchfab.com/3d-models/su-kh-25ml-war-thunder-71e9333f0c624f75a0de263a3308ac84)
+- [Su Kh-25ML](https://sketchfab.com/3d-models/su-kh-25ml-war-thunder-71e9333f0c624f75a0de263a3308ac84)
