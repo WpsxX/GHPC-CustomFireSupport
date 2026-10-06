@@ -77,7 +77,6 @@ namespace CustomFireSupport
 
                 string text = existing.TrimEnd('\n', '\r') + "\n\n" + sectionText.TrimEnd('\n') + "\n";
                 File.WriteAllText(path, text);
-                Log.Info("created the [CustomFireSupport] section in " + path);
                 return true;
             }
             catch (Exception ex)
@@ -115,3 +114,4 @@ namespace CustomFireSupport
         }
     }
 }
+

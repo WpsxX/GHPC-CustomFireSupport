@@ -39,9 +39,8 @@ namespace CustomFireSupport
             {
                 MelonPreferences.Load();
             }
-            catch (Exception ex)
+            catch
             {
-                Log.Verbose("MelonPreferences.Load() failed: " + ex.Message);
             }
 
             _values = CfgFile.ReadCustomSection();
@@ -51,7 +50,6 @@ namespace CustomFireSupport
             }
             else
             {
-                Log.Verbose("config loaded from " + CfgFile.Path + " (" + _values.Count + " keys).");
             }
         }
 
@@ -64,11 +62,11 @@ namespace CustomFireSupport
             GlobalConfig config = new GlobalConfig();
             config.Enabled = GetBool("Enabled", true);
             config.HideVanillaFireSupport = GetBool("HideVanillaFireSupport", true);
+            config.VerboseLogging = GetBool("VerboseLogging", false);
             config.IlluminationOnlyAtNight = GetBool("IlluminationOnlyAtNight", true);
             // The mirror rule: smoke screens are pointless in the dark, so smoke slots are hidden at
             // night unless this is turned off.
             config.SmokeOnlyDuringDay = GetBool("SmokeOnlyDuringDay", true);
-            config.VerboseLogging = GetBool("VerboseLogging", false);
             config.CasDeployDistanceMeters = SlotConfigParsing.ClampRange(GetFloat("CasDeployDistanceMeters", 8000f), 100f, 60000f);
             config.CasDeployBearingDegrees = SlotConfigParsing.ClampHeading(GetFloat("CasDeployBearingDegrees", 180f));
             // Default "auto": pre-loading the CAS family (incl. their hardpoints and the ammo those
@@ -255,3 +253,5 @@ namespace CustomFireSupport
         }
     }
 }
+
+

@@ -44,6 +44,13 @@ namespace CustomFireSupport
         private static readonly List<BuiltSlot> _built = new List<BuiltSlot>();
         private static readonly List<GameObject> _buttons = new List<GameObject>();
 
+        /// <summary>
+        /// Frame in which each CAS slot last re-rolled its airframe. A single map click reaches
+        /// TryCallCAS once per leaked subscriber, so this is what keeps one click to ONE draw (see
+        /// TryRerollAirframeForCall). Cleared with the slots on a scene change.
+        /// </summary>
+        private static readonly Dictionary<int, int> _rerolledFrame = new Dictionary<int, int>();
+
         private static GlobalConfig _global = new GlobalConfig();
         private static Faction _playerFaction = Faction.Neutral;
         private static FireMissionManager _fireManager;
@@ -119,8 +126,6 @@ namespace CustomFireSupport
         {
             if (_preparedThisMission)
             {
-                Log.Verbose("the mission is already prepared - keeping the slots built at mission start " +
-                            "(the map was created again).");
                 return;
             }
             _preparedThisMission = true;
@@ -137,13 +142,10 @@ namespace CustomFireSupport
                 _global = ConfigSchema.ReadGlobal();
                 if (!_global.Enabled)
                 {
-                    Log.Info("disabled by config (Enabled = false).");
                     return;
                 }
 
                 _playerFaction = ResolvePlayerFaction();
-                Log.Info("preparing custom fire support for faction " + _playerFaction + (mapController == null ? " (no MapController)" : string.Empty));
-
                 // Each mission re-indexes the CAS hardpoint library from whatever is loaded *now*
                 // (mission airframes + loadout assets); the previous mission's payloads are gone.
                 CasAttackLibrary.Reset();
@@ -167,7 +169,6 @@ namespace CustomFireSupport
                     {
                         continue;
                     }
-                    Log.Info(slots[i].Describe());
                     if (slots[i].IsCas)
                     {
                         needsCas = true;
@@ -223,14 +224,11 @@ namespace CustomFireSupport
         {
             if (config.Kind == SlotKind.ArtilleryIllumination && _global.IlluminationOnlyAtNight && !IsNight())
             {
-                Log.Info("slot " + config.Index + " skipped: IlluminationOnlyAtNight is on and it is daytime.");
                 return;
             }
 
             if (config.Kind == SlotKind.ArtillerySmoke && _global.SmokeOnlyDuringDay && IsNight())
             {
-                Log.Info("slot " + config.Index + " skipped: SmokeOnlyDuringDay is on and it is night " +
-                         "(a smoke screen does nothing in the dark).");
                 return;
             }
 
@@ -353,9 +351,8 @@ namespace CustomFireSupport
             {
                 _casManager.SetAirframes();
             }
-            catch (Exception ex)
+            catch
             {
-                Log.Verbose("SetAirframes() after injection failed: " + ex.Message);
             }
         }
 
@@ -419,7 +416,6 @@ namespace CustomFireSupport
                 panel.SetMaximizeEnabled(true);
                 panel.ResizeToFit(panel.ButtonListParent.childCount);
                 panel.Maximize(true);
-                Log.Info("added " + _buttons.Count + " custom fire-support button(s) to the map panel.");
             }
             else
             {
@@ -489,15 +485,9 @@ namespace CustomFireSupport
                 {
                     control.SetCooldownReady();
                 }
-                catch (Exception readyException)
+                catch
                 {
-                    Log.Verbose("slot " + slot.Config.Index + ": SetCooldownReady failed: " + readyException.Message);
                 }
-
-                Log.Verbose("slot " + slot.Config.Index + ": button created (prefab default flag=" + prefabDefault +
-                            ", ours=" + flag + ", status='" + ReadText(control, "_cooldownStatusText") +
-                            "', time='" + ReadText(control, "_cooldownTimeText") + "').");
-
                 try
                 {
                     Sprite icon = LookupIcon(panel, flag);
@@ -506,10 +496,9 @@ namespace CustomFireSupport
                         control.Icon = icon;
                     }
                 }
-                catch (Exception iconException)
+                catch
                 {
                     // The icon is cosmetic; never let it abort the button.
-                    Log.Verbose("slot " + slot.Config.Index + ": icon lookup failed: " + iconException.Message);
                 }
 
                 Button button = instance.GetComponent<Button>();
@@ -555,7 +544,7 @@ namespace CustomFireSupport
             return builder.ToString();
         }
 
-        /// <summary>Reads a TMP text field without referencing TMPro (diagnostics only).</summary>
+        /// <summary>Reads a TMP text field without referencing TMPro.</summary>
         private static string ReadText(object component, string fieldName)
         {
             try
@@ -587,16 +576,14 @@ namespace CustomFireSupport
                     SupportIconMappingRef(panel) as IDictionary<MapControlFlag, Sprite>;
                 if (mapping == null)
                 {
-                    Log.Verbose("fire-support icon mapping is not a MapControlFlag->Sprite dictionary.");
                     return null;
                 }
 
                 Sprite sprite;
                 return mapping.TryGetValue(flag, out sprite) ? sprite : null;
             }
-            catch (Exception ex)
+            catch
             {
-                Log.Verbose("icon lookup failed: " + ex.Message);
                 return null;
             }
         }
@@ -633,6 +620,7 @@ namespace CustomFireSupport
             _buttons.Clear();
             _artillery.Clear();
             _cas.Clear();
+            _rerolledFrame.Clear();
             _built.Clear();
             _pendingButtons = false;
             _buttonWaitFrames = 0;
@@ -837,6 +825,21 @@ namespace CustomFireSupport
                     return false; // gun run: designated airframe, must not change.
                 }
 
+                // ONE DRAW PER CLICK. A single map click dispatches MapController.TryCallCAS once per
+                // surviving subscriber (the game never unsubscribes its CAS handler - see
+                // CasCallReadinessRepair), so this method runs two or more times for one click, and every
+                // run rebuilds the slot. Without this guard the second dispatch re-rolls the aircraft out
+                // from under the clone the first dispatch is already spawning: the airframe unit's prefab
+                // and loadout change mid-call, and the sortie that reaches SetLoadout is not the one that
+                // was drawn. The first draw in a frame wins; a later, genuinely new click still re-rolls.
+                int frame = Time.frameCount;
+                int rerolledAt;
+                if (_rerolledFrame.TryGetValue(slot.Config.Index, out rerolledAt) && rerolledAt == frame)
+                {
+                    return false;
+                }
+                _rerolledFrame[slot.Config.Index] = frame;
+
                 // Re-roll the airframe for this call: a bomb / rocket slot flies a different aircraft
                 // each time. Safe now that every candidate comes from the bundle's name-keyed catalogue
                 // (CasPrewarmer.BundleAirframeNames), so a draw always yields a summonable prefab asset -
@@ -862,11 +865,6 @@ namespace CustomFireSupport
                 airframe.airframePrefab = fresh.Airframe.airframePrefab;
                 airframe.Loadout = fresh.Airframe.Loadout;
                 airframe.flyoverType = fresh.Airframe.flyoverType;
-
-                Log.Info("slot " + slot.Config.Index + ": re-rolled this call to airframe '" +
-                         airframe.airframePrefab.name + "' + loadout '" +
-                         (airframe.Loadout != null && airframe.Loadout.Loadout != null ? "(asset)" : "?") +
-                         "' (bomb / rocket slots change aircraft and loadout on every call).");
                 return true;
             }
             catch (Exception ex)
@@ -1042,9 +1040,8 @@ namespace CustomFireSupport
                     return input.CurrentPlayerUnit.Allegiance;
                 }
             }
-            catch (Exception ex)
+            catch
             {
-                Log.Verbose("could not read the player faction: " + ex.Message);
             }
             return fallback;
         }
@@ -1142,7 +1139,6 @@ namespace CustomFireSupport
 
                 BlueDeployPointRef(manager) = point;
                 RedDeployPointRef(manager) = point;
-                Log.Info("CAS deploy point placed at (" + point.x.ToString("0") + ", " + point.y.ToString("0") + ") based on the player's start position.");
                 return true;
             }
             catch (Exception ex)
@@ -1176,7 +1172,8 @@ namespace CustomFireSupport
             }
             GameObject host = new GameObject("CustomFireSupport_CooldownManager");
             host.AddComponent<CooldownManager>();
-            Log.Verbose("created a CooldownManager because the mission has none.");
         }
     }
 }
+
+

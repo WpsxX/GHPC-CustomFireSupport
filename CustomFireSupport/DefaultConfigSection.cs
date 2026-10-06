@@ -54,15 +54,15 @@ namespace CustomFireSupport
             Entry(sb, "HideVanillaFireSupport", "true", Pick(lang,
                 "true = 地图上只显示你的槽位（官方炮组/架次数组不动，脚本火力照常）",
                 "true = only your slots show on the map (the vanilla battery / sortie arrays are untouched, scripted fire support still runs)"));
+            Entry(sb, "VerboseLogging", "false", Pick(lang,
+                "true = 把模板发现/槽位解析细节打印到日志",
+                "true = print template discovery / slot parsing details to the log"));
             Entry(sb, "IlluminationOnlyAtNight", "true", Pick(lang,
                 "true = 照明槽位只在夜间出现（默认）；false = 白天也能用",
                 "true = illumination slots appear at night only (default); false = usable by day too"));
             Entry(sb, "SmokeOnlyDuringDay", "true", Pick(lang,
                 "true = 烟幕槽位只在白天出现（默认）；夜间烟雾看不见，自动隐藏；false = 全天可用",
                 "true = smoke slots appear during the day only (default); smoke is invisible at night, so they auto-hide; false = usable around the clock"));
-            Entry(sb, "VerboseLogging", "false", Pick(lang,
-                "true = 把模板发现/槽位解析细节打印到日志",
-                "true = print template discovery / slot parsing details to the log"));
             Entry(sb, "CasDeployDistanceMeters", "8000.0", Pick(lang,
                 "仅当关卡没有 CasSupportManager 时：自建管理器的飞机起飞点距玩家起始位置多远（米）",
                 "only when the mission has no CasSupportManager: how far the self-built manager's aircraft spawn point sits from the player's start position (metres)"));
@@ -208,3 +208,4 @@ namespace CustomFireSupport
         }
     }
 }
+

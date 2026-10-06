@@ -70,6 +70,19 @@ namespace CustomFireSupport
                 Pattern = "f-104", Side = AirframeSide.Nato, Flyover = FlyoverKind.SinglePass,
                 TypicalAttacks = new[] { AttackKind.Rockets, AttackKind.Bombs }
             },
+            // The F-15 is a mod addition: GHPC ships it only as scene objects, so it was extracted into a
+            // prefab (see CasF15Extract) and bundled. It flies bombs and the air-to-ground missile - not
+            // rockets - which is why Rockets is absent from its typical attacks.
+            new AirframeInfo
+            {
+                Pattern = "f15", Side = AirframeSide.Nato, Flyover = FlyoverKind.SinglePass,
+                TypicalAttacks = new[] { AttackKind.Bombs, AttackKind.AirToGroundMissile }
+            },
+            new AirframeInfo
+            {
+                Pattern = "f-15", Side = AirframeSide.Nato, Flyover = FlyoverKind.SinglePass,
+                TypicalAttacks = new[] { AttackKind.Bombs, AttackKind.AirToGroundMissile }
+            },
 
             // ---- Red / Warsaw Pact ------------------------------------------
             new AirframeInfo
@@ -165,10 +178,13 @@ namespace CustomFireSupport
             "f104|f-104g mk82s only",
             "f4_lw|f4 2x triple mk82",
             "f4_usaf|f4 2x triple mk82",
+            "f15|f15 2x single mk82",
             "mig17|mig-17 rockets only",
             "mig21|mig-21 rockets only",
             "mig23bn|mig-23bn fab-250s only",
-            "su22|mig-23bn fab-250s only"
+            "su22|mig-23bn fab-250s only",
+            // The Su-25's own loadout: every one of its eight under-wing stations carries a FAB-250.
+            "su25|su-25 fab-250 x8"
         };
 
         /// <summary>
@@ -224,8 +240,23 @@ namespace CustomFireSupport
         {
             "f104|f-104g rockets",
             "mig23bn|mig-23bn rockets only",
-            "su22|su-22 rockets multiple"
+            "su22|su-22 rockets multiple",
+            // An airframe gets ONE default loadout, and the Su-25's is the eight-bomb one. Its rocket
+            // fitment - B-8 pods on the two innermost stations - is its own as well, so it is approved here
+            // to keep the Su-25 in the Red rocket draw instead of being limited to bombs.
+            "su25|su-25 rockets inner"
         };
+
+        /// <summary>
+        /// How many airframe+loadout pairs were explicitly approved (see
+        /// <see cref="ApprovedCrossLoadoutPairs"/>). Exposed so the test suite can assert the table is
+        /// populated rather than silently empty - an empty table would quietly drop the three rocket pairs
+        /// the approved list exists for.
+        /// </summary>
+        internal static int ApprovedPairCount
+        {
+            get { return ApprovedCrossLoadoutPairs.Length; }
+        }
 
         /// <summary>
         /// True when this airframe+loadout pair was explicitly approved above. Both names are matched
@@ -308,6 +339,49 @@ namespace CustomFireSupport
         }
 
         /// <summary>
+        /// What kind of warhead a missile carries. Kept as the catalog's own enum (like
+        /// <see cref="AirframeSide"/>) so this file stays free of the game's assemblies and remains
+        /// testable without the shipped DLL; CasPayloadFactory maps it onto AmmoType.AmmoCategory.
+        /// </summary>
+        internal enum WarheadKind
+        {
+            /// <summary>Blast warhead: damage comes from the charge, penetration from spall and blast.</summary>
+            HighExplosive = 0,
+
+            /// <summary>
+            /// Shaped charge (the game's "HEAT"): LiveRound sets _isHeat from this, which changes the
+            /// damage model to a molten jet and makes RhaPenetration - not the charge - the figure that
+            /// decides what the round can defeat. See CasPayloadFactory for the RHA that is kept.
+            /// </summary>
+            ShapedCharge = 1
+        }
+
+        /// <summary>
+        /// How an air-to-ground missile finds its target after launch. Kept as the catalog's own enum (like
+        /// <see cref="WarheadKind"/>) so this file stays free of the game's assemblies and testable without
+        /// the shipped DLL; CasMissileGuidance is what acts on it.
+        ///
+        /// The two values are not a flavour detail - they are the two weapons' defining difference, and
+        /// they also decide what the round does when it loses its guidance:
+        ///
+        ///   * FireAndForget - the seeker was locked before launch ("机载下视锁定"), so the aircraft may
+        ///     leave immediately ("彻底解放"). Losing the target leaves a round with no corrections left:
+        ///     it keeps its attitude and its speed and falls away on the last tangent.
+        ///   * LaserBeamRider - nothing is locked onto the target itself; the round flies at a laser spot
+        ///     the CARRIER paints, and it only sees that spot while the carrier's nose is inside
+        ///     LaserMaxOffAxisDegrees of it ("发射后飞行员绝对不能大幅机动"). Losing the spot is a
+        ///     control failure, not a silent miss: the round tumbles and dives into the ground.
+        /// </summary>
+        internal enum GuidanceKind
+        {
+            /// <summary>Locked before launch, unguided by the carrier afterwards.</summary>
+            FireAndForget = 0,
+
+            /// <summary>Follows the carrier's laser spot, and only while the carrier keeps it in view.</summary>
+            LaserBeamRider = 1
+        }
+
+        /// <summary>
         /// The spec of the synthesized air-to-ground missile payload. The mod fires the game's own
         /// missile MODEL with the TOW missile's flight effects, but with a BOMB's data - so the model
         /// and the warhead come from different donors and the profile names both.
@@ -316,6 +390,13 @@ namespace CustomFireSupport
         {
             /// <summary>Human readable name for the log, e.g. "AGM-65 Maverick".</summary>
             internal string MissileId;
+
+            /// <summary>
+            /// Substring identifying the prefab that is shown hanging on the pylon before launch, so each
+            /// side shows ITS OWN round: the AGM-65 for the NATO missile, the Kh-25 for the Soviet one.
+            /// Matched case-insensitively against the bundle's prefab names.
+            /// </summary>
+            internal string PylonBodyHint;
 
             /// <summary>
             /// Name fragment of the composed missile prefab in the bundle (CasMissileComposer builds it
@@ -351,11 +432,39 @@ namespace CustomFireSupport
 
             /// <summary>
             /// The speed the mod's impact resolver pins this missile to for the whole flight, in m/s.
-            /// Mach 1.2 (<see cref="CruiseSpeedMetersPerSecond"/>): a bomb-shaped round would otherwise have
-            /// its speed bled away by drag (the bomb's drag coefficient is scaled by <see cref="DragScale"/>
-            /// as well), and inheriting the aircraft's airspeed made the observed speed depend on the run.
+            /// Each profile sets its OWN figure now, so the two sides no longer fly at the same speed:
+            /// the resolver reads it per round through CasPayloadFactory.CruiseSpeedFor.
+            ///
+            /// Pinning matters because a bomb-shaped round would otherwise have its speed bled away by drag
+            /// (the bomb's drag coefficient is scaled by <see cref="DragScale"/> as well), and inheriting
+            /// the aircraft's airspeed made the observed speed depend on the run.
             /// </summary>
             internal float CruiseSpeedMeters = CasAirframeCatalog.CruiseSpeedMetersPerSecond;
+
+            /// <summary>
+            /// The warhead this missile carries. Overrides the donor bomb's Category/ShortName: the missile
+            /// is meant to be its own weapon, not "a bomb with a rocket motor".
+            /// </summary>
+            internal WarheadKind Warhead = WarheadKind.HighExplosive;
+
+            /// <summary>
+            /// The charge mass in kg TNTe, which is what the game's AmmoType.TntEquivalentKg holds and what
+            /// the blast model reads. Overrides the donor bomb's figure.
+            /// </summary>
+            internal float WarheadChargeKilograms;
+
+            /// <summary>
+            /// The shaped charge's penetration in mm RHA, or 0 to keep the donor bomb's.
+            ///
+            /// This is the field that decides what a shaped charge defeats: LiveRound reads penetration
+            /// straight from AmmoType.RhaPenetration for a ShapedCharge round (`if (_isHeat &amp;&amp; !_jetActive)
+            /// return Info.RhaPenetration;`), and derives the jet's travel from it as well. Setting it is
+            /// therefore how a HEAT warhead gets its real performance; the charge mass alone does not.
+            ///
+            /// For scale, GHPC's own anti-tank missiles sit at 9M111 400, TOW 430, 9M14M 460, 9M112 440,
+            /// PG-7VL 500, 9M112M 520, 3BK18M 585, and 9M113 / 9M114 / 9M17P / MILAN 600, I-TOW 630.
+            /// </summary>
+            internal float RhaPenetrationMm;
 
             /// <summary>
             /// The bomb's drag coefficient is multiplied by this for the missile: a bomb is a blunt body, an
@@ -366,12 +475,147 @@ namespace CustomFireSupport
             /// <summary>Launch deviation arc in degrees (total arc length, as in the game's field).</summary>
             internal float DeviationDegrees = 0.4f;
 
+            // ------------------------------------------------------------------
+            // GUIDANCE AND FLIGHT CHARACTER
+            //
+            // The two sides' missiles are deliberately NOT the same weapon with different numbers: one is
+            // a fire-and-forget imaging-seeker round that arches out, glides and pushes over, and the
+            // other is a laser rider that has to be flown by a carrier that keeps the nose on the target,
+            // pops up over the line of sight and then comes down hard. Every field below exists because
+            // one of those two behaviours needs it, and the two profiles set opposite values for most of
+            // them on purpose.
+            // ------------------------------------------------------------------
+
             /// <summary>
-            /// Range from the target at which the attack run releases, in metres. Further out than a bomb
-            /// (the game's default is 1000 m): a missile is a stand-off weapon, and the mod flies it onto
-            /// the impact point regardless of where it was released.
+            /// How the round is guided after launch, which also decides what happens when the guidance is
+            /// lost (see <see cref="LostGuidancePitchDegreesPerSecond"/>).
             /// </summary>
-            internal float ReleaseDistanceMeters = 2600f;
+            internal GuidanceKind Guidance = GuidanceKind.FireAndForget;
+
+            /// <summary>
+            /// Motor burn time in seconds, measured from launch. It is the clock for two things at once:
+            /// the visual plume (CasMissileMotorBurnout switches the flame, the smoke trail, the engine
+            /// light and the engine audio off at exactly this age) and the guidance's boost phase, during
+            /// which the round may not fly shallower than <see cref="BoostClimbDegrees"/>.
+            /// </summary>
+            internal float MotorBurnSeconds = 5f;
+
+            /// <summary>
+            /// The climb angle the round is held to while the motor burns, in degrees ABOVE the line to
+            /// the target. A missile that leaves the rail flat is a big rocket pointed at the target; both
+            /// of these are launched with their noses pulled up instead. The AGM-65 lurches up hard (the
+            /// player's "迅速抬高机头，约抬升20度"), the Kh-25 lifts less but keeps the height longer.
+            /// </summary>
+            internal float BoostClimbDegrees = 20f;
+
+            /// <summary>
+            /// How far ABOVE the line of sight the round aims while it is still far out, in metres. This is
+            /// the whole shape of the trajectory: the round flies at a point that floats above the target
+            /// and lets it sink back onto the target as the range closes, so it arrives from above without
+            /// the guidance ever having to force an angle steeper than the ground allows.
+            ///
+            /// The AGM-65's "饱满的抛物拱桥" is a moderate arch; the Kh-25's "山坡 (Gorka)" is a higher
+            /// pop-up that keeps the round clear of the dust its own laser has to see through, and it is
+            /// what makes its final dive so steep (it is still high when the target is close).
+            /// </summary>
+            internal float LoftHeightMeters = 110f;
+
+            /// <summary>
+            /// The flight-path angle the round is allowed to arrive at, in degrees below the horizontal,
+            /// applied inside <see cref="TerminalRangeMeters"/>: the descent is capped to no steeper than
+            /// this, so the round settles onto the target from slightly above instead of snapping down.
+            ///
+            /// The AGM-65's "平稳向下压头，约30度斜俯角" is this number. The Kh-25 sets it high enough not
+            /// to bind: it is MEANT to arrive as steeply as the geometry allows, which the loft decides.
+            /// </summary>
+            internal float TerminalDiveDegrees = 30f;
+
+            /// <summary>
+            /// The range from the target, in metres, at which the loft is given up and the round aims
+            /// straight at the impact point. Zero loft this far out is what turns the arch into a dive;
+            /// a longer terminal range starts the push-over earlier and harder.
+            /// </summary>
+            internal float TerminalRangeMeters = 900f;
+
+            /// <summary>
+            /// Turn rate in degrees per second while the motor burns, in degrees per second. A missile at
+            /// full thrust has the most control authority it will ever have, and this is what makes the
+            /// launch pull-up look quick instead of the aircraft's own slow bank. It is a separate number
+            /// from the cruise rate on purpose: the round snaps its nose up and then flies smoothly.
+            /// </summary>
+            internal float BoostTurnRateDegreesPerSecond = 45f;
+
+            /// <summary>
+            /// Turn rate in degrees per second while the round is far out, in degrees per second. Without
+            /// a limit the heading snaps straight to the computed direction, which reads as an instant
+            /// pull-up; the AGM-65's "像一条被拉弯的钢丝，几乎没有突兀扭动" is a low number.
+            /// </summary>
+            internal float CruiseTurnRateDegreesPerSecond = 12f;
+
+            /// <summary>
+            /// Turn rate inside <see cref="TerminalRangeMeters"/>. The Kh-25's "鸭翼剧烈偏转，硬掰机头"
+            /// is a high number: the same guidance law, allowed to bite much harder.
+            /// </summary>
+            internal float TerminalTurnRateDegreesPerSecond = 30f;
+
+            /// <summary>
+            /// The closest the aircraft may RELEASE this missile, in metres of horizontal range to the
+            /// target. Inside this the shot is not taken: the round would have to come off the rail with the
+            /// target nearly underneath it, and (see CasMissileAttackRun) the aircraft goes around for
+            /// another pass instead. 0 disables the check.
+            ///
+            /// These are practical employment minima, not brochure figures - a run starts at the loadout's
+            /// ReleaseDistance (1,800 m), so the gate only fires when the target was already closer than this
+            /// when the call went in.
+            /// </summary>
+            internal float MinimumLaunchRangeMeters = 250f;
+
+            /// <summary>
+            /// The largest angle between the aircraft's nose and the target that still counts as a launch.
+            /// Beyond it the round has to turn through more than its control authority allows before it can
+            /// even see the target, which is how a shot ends up sailing past.
+            /// </summary>
+            internal float MaxLaunchOffAxisDegrees = 60f;
+
+            /// <summary>
+            /// The widest angle, in degrees, the CARRIER's nose may be off the laser spot for a
+            /// <see cref="GuidanceKind.LaserBeamRider"/> round to keep seeing it. Zero for a round that
+            /// does not ride a beam. The player's figure for the Kh-25ML is 30-35 degrees.
+            /// </summary>
+            internal float LaserMaxOffAxisDegrees;
+
+            /// <summary>
+            /// The longest the carrier may be asked to hold its run for one of these rounds, in seconds.
+            /// The hold itself is the flight time to the target plus a margin, capped here so a round that
+            /// somehow never arrives cannot keep an aircraft flying straight at the target forever.
+            /// Zero for a fire-and-forget round, which frees the aircraft at launch.
+            /// </summary>
+            internal float CarrierHoldMaxSeconds;
+
+            /// <summary>
+            /// Guidance lost: how fast the nose drops, in degrees per second. The AGM-65's "失去修正能力，
+            /// 沿最后的惯性切线平缓向前下落" is a few degrees per second; the Kh-25's "急剧俯冲下坠" is
+            /// an order of magnitude more.
+            /// </summary>
+            internal float LostGuidancePitchDegreesPerSecond = 5f;
+
+            /// <summary>Guidance lost: how fast the nose wanders, in degrees per second (0 = fly straight).</summary>
+            internal float LostGuidanceYawDegreesPerSecond;
+
+            /// <summary>
+            /// Guidance lost: how fast the round rolls about its own axis, in degrees per second. This is
+            /// the Kh-25's "小幅度剧烈自旋、横滚" and it is deliberately zero for the AGM-65, which is
+            /// described as NOT going wild when it loses its target.
+            /// </summary>
+            internal float LostGuidanceRollDegreesPerSecond;
+
+            /// <summary>
+            /// Range from the target at which the attack run releases, in metres. As far out as the guidance
+            /// can be trusted: the player asked for the missile to leave the rail as early as possible, and
+            /// both profiles' loft law saturates at their terminal range, so a longer release simply means a
+            /// longer glide rather than a different flight (validated out to ~3.2 km in _mountcheck).
+            /// </summary>
+            internal float ReleaseDistanceMeters = 2000f;
 
             /// <summary>The airframe this payload is pinned to, for the log.</summary>
             internal string Airframe;
@@ -379,13 +623,56 @@ namespace CustomFireSupport
 
         /// <summary>
         /// Blue missile: the AGM-65 carried by the A-10 (GHPC only ships the mesh, mounted as a visible
-        /// pylon munition - there is no AGM-65 prefab or ammo asset in the game), pinned to the A-10.
+        /// pylon munition - there is no AGM-65 prefab or ammo asset in the game). Flown at 1,150 km/h with
+        /// a 56.25 kg shaped-charge warhead, matching the real AGM-65A/B/D/H: a 125 lb (57 kg) hollow
+        /// charge at Mach 0.93.
+        ///
+        /// PENETRATION: 450 mm RHA, the figure commonly quoted for the Maverick's 57 kg shaped charge. It is
+        /// set explicitly because a shaped charge takes its penetration from AmmoType.RhaPenetration, not
+        /// from the charge - inheriting the donor Mk-82 would have left the HEAT jet at a general-purpose
+        /// bomb's 90 mm. For reference, GHPC's own ATGMs run 400 mm (9M111) to 630 mm (I-TOW).
+        ///
+        /// FLIGHT: the "饱满的抛物拱桥" - a hard pull-up to 20 degrees while the motor burns, a moderate
+        /// arch (the round aims 110 m above the sight line and sinks back onto it), a gentle glide once the
+        /// smoke stops, and a push-over to about 30 degrees. Everything about it is rate-limited and
+        /// fire-and-forget: the aircraft is free the moment it leaves the rail, and a lost target leaves it
+        /// falling on its last tangent instead of tumbling.
         /// </summary>
         internal static readonly MissileProfile NatoMissile = new MissileProfile
         {
             MissileId = "AGM-65 Maverick",
             PrefabHint = "agm-65",
-            Airframe = "A-10"
+            PylonBodyHint = "pylon agm65",
+            Airframe = "A-10",
+            // Release as early as the guidance is good for: the A-10's Maverick is a stand-off shot, and the
+            // player asked for the missile to leave the rail as soon as the run allows.
+            ReleaseDistanceMeters = 2200f,
+            // 1,150 km/h exactly: km/h -> m/s is /3.6.
+            CruiseSpeedMeters = 1150f / 3.6f,
+            Warhead = WarheadKind.ShapedCharge,
+            WarheadChargeKilograms = 56.25f,
+            RhaPenetrationMm = 450f,
+            // Seeker lock before launch: the carrier is released at the rail, so there is no run to hold.
+            Guidance = GuidanceKind.FireAndForget,
+            MotorBurnSeconds = 5f,
+            BoostClimbDegrees = 18f,
+            LoftHeightMeters = 140f,
+            TerminalDiveDegrees = 30f,
+            TerminalRangeMeters = 1200f,
+            // "迅速抬高机头" at full thrust, then "像一条被拉弯的钢丝" for the rest of the flight.
+            BoostTurnRateDegreesPerSecond = 45f,
+            CruiseTurnRateDegreesPerSecond = 12f,
+            TerminalTurnRateDegreesPerSecond = 22f,
+            // A Maverick is a short-range weapon by air-to-ground missile standards, but it still needs a
+            // launch envelope: under ~900 m the aircraft is firing at something almost under its nose.
+            MinimumLaunchRangeMeters = 250f,
+            MaxLaunchOffAxisDegrees = 60f,
+            LaserMaxOffAxisDegrees = 0f,
+            CarrierHoldMaxSeconds = 0f,
+            // Lost seeker: no corrections left, nose falls away slowly, no spin, no wander.
+            LostGuidancePitchDegreesPerSecond = 5f,
+            LostGuidanceYawDegreesPerSecond = 0f,
+            LostGuidanceRollDegreesPerSecond = 0f
         };
 
         /// <summary>
@@ -394,13 +681,77 @@ namespace CustomFireSupport
         /// in-game asset it is: GHPC ships no separate Soviet air-to-ground missile asset (no mesh, no
         /// prefab, no ammo - a full scan of GHPC_Data and of every installed mod bundle finds none), so the
         /// model is the closest in-game Soviet missile while the name stays the one the player asked for.
+        /// Flown at 450 m/s with a 90 kg high-explosive warhead.
+        ///
+        /// FLIGHT: "暴烈的尖锐窜动，先抬后砸" - the motor is a single high-thrust stage (four seconds of
+        /// it, most of the flight), the round pops up over the sight line (the "山坡 / Gorka", high enough
+        /// that its own laser is not looking through the dust it kicked up), it stays high instead of
+        /// gliding down, and the last stretch is a hard, near-straight slam. Its control authority is more
+        /// than four times the AGM-65's, which is what "鸭翼剧烈偏转" looks like.
+        ///
+        /// The laser is the whole weapon: the carrier has to hold its run with the nose within 35 degrees
+        /// of the spot until the round lands (CasLaserRunHold keeps the AI aircraft on that run and reports
+        /// it in the log), and a beam that breaks takes the round's control with it.
         /// </summary>
         internal static readonly MissileProfile PactMissile = new MissileProfile
         {
             MissileId = "Kh-25",
             PrefabHint = "kh-25",
-            Airframe = "MiG-23BN"
+            PylonBodyHint = "pylon kh25",
+            Airframe = "MiG-23BN",
+            CruiseSpeedMeters = 450f,
+            Warhead = WarheadKind.HighExplosive,
+            WarheadChargeKilograms = 90f,
+            // Laser rider: the carrier must keep painting the spot, and the AI aircraft really does hold
+            // the run for the flight (that is the "危险的伴飞过程" of the brief, not a cosmetic detail).
+            Guidance = GuidanceKind.LaserBeamRider,
+            MotorBurnSeconds = 5f,
+            // A lower pull-up than the AGM, but held longer and with a much higher loft under it.
+            BoostClimbDegrees = 12f,
+            LoftHeightMeters = 260f,
+            // Deliberately high enough not to bind: the dive is as steep as the geometry allows, and the
+            // loft is what makes that steep.
+            TerminalDiveDegrees = 80f,
+            TerminalRangeMeters = 600f,
+            BoostTurnRateDegreesPerSecond = 60f,
+            CruiseTurnRateDegreesPerSecond = 18f,
+            // "鸭翼剧烈偏转，以近乎笔直的角度强行把机头硬掰朝向激光反射点".
+            TerminalTurnRateDegreesPerSecond = 55f,
+            // The laser needs the round to fly long enough for the carrier to hold its run, and the brief's
+            // Kh-25 is a stand-off weapon: a release under ~1.5 km leaves the aircraft shooting at something
+            // it is already flying past. The aircraft goes around instead (CasMissileAttackRun).
+            MinimumLaunchRangeMeters = 250f,
+            MaxLaunchOffAxisDegrees = 50f,
+            // The player's figure for the Kh-25ML: 30-35 degrees of carrier nose offset.
+            LaserMaxOffAxisDegrees = 35f,
+            CarrierHoldMaxSeconds = 12f,
+            // Lost beam: control failure - the nose slams down and the round spins and wanders as it goes.
+            LostGuidancePitchDegreesPerSecond = 140f,
+            LostGuidanceYawDegreesPerSecond = 55f,
+            LostGuidanceRollDegreesPerSecond = 540f
         };
+
+        /// <summary>
+        /// The profile a built missile round belongs to, matched by the MissileId the factory stamps onto
+        /// it. Each side's missile flies at its OWN speed now, so the resolver can no longer take the figure
+        /// from one profile and apply it to both.
+        /// </summary>
+        internal static MissileProfile MissileById(string missileId)
+        {
+            if (string.IsNullOrEmpty(missileId))
+            {
+                return null;
+            }
+            if (string.Equals(missileId, NatoMissile.MissileId, System.StringComparison.OrdinalIgnoreCase))
+            {
+                return NatoMissile;
+            }
+            if (string.Equals(missileId, PactMissile.MissileId, System.StringComparison.OrdinalIgnoreCase))
+            {
+                return PactMissile;
+            }
+            return null;
+        }
 
         /// <summary>The missile profile of a side (Nato = AGM-65, Pact = the Soviet missile visual).</summary>
         internal static MissileProfile MissileFor(AirframeSide side)
@@ -408,13 +759,81 @@ namespace CustomFireSupport
             return side == AirframeSide.Pact ? PactMissile : NatoMissile;
         }
 
-        private static readonly string[] NatoMissileAirframes = { "a-10", "a10" };
-        private static readonly string[] PactMissileAirframes = { "mig-23bn", "mig23bn", "mig 23bn" };
+        // Blue: the A-10 carries the AGM-65 model on its pylons, and the F-15 (a mod addition, extracted
+        // from the game's terrain scenes) flies it too - the two share the NATO missile slot's draw.
+        private static readonly string[] NatoMissileAirframes = { "a-10", "a10", "f15", "f-15" };
+        // Red: the MiG-23BN, plus the Su-25 (the player's own model, reconstructed by CasSu25Build), which
+        // carries the Kh-25 as a symmetric pair.
+        private static readonly string[] PactMissileAirframes = { "mig-23bn", "mig23bn", "mig 23bn", "su25", "su-25" };
+
+        /// <summary>One missile, on the first station - the layout for airframes with a single AGM station.</summary>
+        private static readonly int[] SingleMissileStation = { 0 };
 
         /// <summary>
-        /// True for the aircraft a missile slot is pinned to on the given side: A-10 (Blue) and
-        /// MiG-23BN (Red) - the same two the gun run uses, because the AGM-65 model only exists on the
-        /// A-10's pylons and the MiG-23BN is the Pact's ground attack aircraft.
+        /// The Su-25's Kh-25 pair: the second-from-outermost pylon on each wing. The station order is the
+        /// order CasSu25Build creates them in - L1, L2, L3, L4, R4, R3, R2, R1 - so index 2 is the left
+        /// station and index 5 the mirror on the right.
+        /// </summary>
+        private static readonly int[] Su25MissileStations = { 2, 5 };
+
+        /// <summary>
+        /// The F-15's AGM-65 pair. Its three attach points are left inboard (0), belly (1) and right inboard
+        /// (2) at x = -2.83 / +0.03 / +2.85, so stations 0 and 2 are the symmetric wing pair - the belly is
+        /// left empty because a single centreline missile is not a "pair".
+        /// </summary>
+        private static readonly int[] F15MissileStations = { 0, 2 };
+
+        /// <summary>
+        /// The A-10's AGM-65 pair. It has eleven attach points (H1..H11 at x = +6.03 down to -6.03) and its
+        /// own model already carries two baked AGM-65s at x = +3.775 / -3.775, which are closest to H3 and
+        /// H9 - indices 2 and 8 - so both rounds launch from under the missiles the player can see.
+        /// </summary>
+        private static readonly int[] A10MissileStations = { 2, 8 };
+
+        /// <summary>
+        /// The MiG-23BN's Kh-25 pair: its four attach points are left wing root (0), left belly (1),
+        /// right belly (2) and right wing root (3), so 0 and 3 are the symmetric wing pair.
+        /// </summary>
+        private static readonly int[] MiG23BNMissileStations = { 0, 3 };
+
+        /// <summary>
+        /// Which attach points an air-to-ground missile is mounted on, as indices into the airframe's own
+        /// HardpointAttachPoints. The count is what decides how many missiles a sortie carries: the attack
+        /// entry gets one trigger pull per station, so a two-station airframe launches two.
+        ///
+        /// Every airframe that can fly the air-to-ground missile carries a PAIR now - the player asked for
+        /// two rounds per sortie, not one. Only the wing pairs are used, never the centreline/belly.
+        /// </summary>
+        internal static int[] MissileStationsFor(string airframeName)
+        {
+            if (!string.IsNullOrEmpty(airframeName))
+            {
+                string lower = airframeName.ToLowerInvariant();
+                if (lower.Contains("su25") || lower.Contains("su-25"))
+                {
+                    return Su25MissileStations;
+                }
+                if (lower.Contains("f15") || lower.Contains("f-15"))
+                {
+                    return F15MissileStations;
+                }
+                if (lower.Contains("a10") || lower.Contains("a-10"))
+                {
+                    return A10MissileStations;
+                }
+                if (lower.Contains("mig23bn") || lower.Contains("mig-23bn"))
+                {
+                    return MiG23BNMissileStations;
+                }
+            }
+            return SingleMissileStation;
+        }
+
+        /// <summary>
+        /// True for the aircraft a missile slot may fly on the given side: the A-10 and the F-15 (Blue),
+        /// the MiG-23BN (Red). The AGM-65 model only exists on the A-10's pylons and the F-15 shares the
+        /// NATO pylon family; the MiG-23BN is the Pact's ground attack aircraft. A missile slot DRAWS
+        /// among these rather than being pinned to one, so the A-10 and the F-15 alternate.
         /// </summary>
         internal static bool IsMissileAirframe(string airframeName, AirframeSide side)
         {
@@ -523,3 +942,7 @@ namespace CustomFireSupport
         }
     }
 }
+
+
+
+

@@ -102,6 +102,38 @@ namespace CustomFireSupport
                 }
 
                 Renderer[] renderers = round.GetComponentsInChildren<Renderer>(true);
+
+                // The composed round deliberately ships the DONOR's own missile switched OFF: the TOW's body,
+                // its four fins and its tracer rod would otherwise hang off our model as a second set of
+                // wings - which is exactly what the player saw. Only the round's OWN body mesh may be
+                // switched back on (for an instance that inherited a hidden state); every other renderer
+                // keeps the state the prefab was composed with, so nothing the composer turned off comes
+                // back. This is a targeted replacement for a blanket "enable everything that is not an
+                // effect", which resurrected the donor geometry.
+                if (wireMotorBurnout)
+                {
+                    Transform body = FindMissileBody(round.transform);
+                    if (body != null)
+                    {
+                        body.gameObject.SetActive(true);
+                        Renderer bodyRenderer = body.GetComponent<Renderer>();
+                        if (bodyRenderer != null)
+                        {
+                            bodyRenderer.enabled = true;
+                        }
+                    }
+                }
+
+                // DIAGNOSTIC: what the round is actually wearing when it spawns. The Kh-25 renders as a white
+                // model while its bundle material verifies correct, so this prints material / shader /
+                // texture per renderer - one run says which link in the chain is broken.
+                for (int d = 0; d < renderers.Length; d++)
+                {
+                    Renderer dr = renderers[d];
+                    if (dr == null) { continue; }
+                    Material dm = dr.sharedMaterial;
+                    Texture dt = (dm != null && dm.HasProperty("_MainTex")) ? dm.GetTexture("_MainTex") : null;
+                }
                 int adopted = 0;
                 int approximated = 0;
                 int hidden = 0;
@@ -115,6 +147,14 @@ namespace CustomFireSupport
                     }
 
                     Material material = renderer.sharedMaterial;
+                    // The Kh-25 bundle contains a visible mesh plus engine/particle children. Never hide
+                    // the actual missile mesh because its material is unresolved; only effect-like objects
+                    // may be suppressed when their approximation would become a white stretched cone.
+                    bool effectLike = renderer is ParticleSystemRenderer ||
+                                      renderer.name.IndexOf("flame", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                      renderer.name.IndexOf("smoke", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                      renderer.name.IndexOf("trail", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                      renderer.name.IndexOf("effect", StringComparison.OrdinalIgnoreCase) >= 0;
                     if (material == null || material.shader == null ||
                         !material.shader.name.StartsWith(OurShaderPrefix, StringComparison.Ordinal))
                     {
@@ -129,7 +169,7 @@ namespace CustomFireSupport
                         continue;
                     }
 
-                    if (LooksLikeDistortion(renderer.name) || LooksLikeDistortion(material.name))
+                    if (effectLike && (LooksLikeDistortion(renderer.name) || LooksLikeDistortion(material.name)))
                     {
                         // A distortion quad sampled by a plain alpha-blended shader draws a visible grey
                         // haze instead of a heat shimmer: with nothing better available, leave it out.
@@ -149,9 +189,6 @@ namespace CustomFireSupport
                     }
                     if (adopted > 0 || hidden > 0)
                     {
-                        Log.Verbose("CAS round visual: " + adopted + " effect material(s) taken from the game" +
-                                    (hidden > 0 ? ", " + hidden + " distortion renderer(s) hidden" : string.Empty) +
-                                    (approximated > 0 ? ", " + approximated + " left approximated" : string.Empty) + ".");
                     }
                     return;
                 }
@@ -165,11 +202,6 @@ namespace CustomFireSupport
                         flames++;
                     }
                 }
-
-                Log.Verbose("CAS missile visual: " + adopted + " effect material(s) taken from the game, " +
-                            approximated + " left approximated" +
-                            (hidden > 0 ? ", " + hidden + " distortion renderer(s) hidden" : string.Empty) +
-                            ", " + flames + " motor flame object(s) wired for burnout.");
                 if (flames == 0)
                 {
                     Log.Warn("CAS missile visual: this round has no motor flame objects, so there is nothing " +
@@ -180,6 +212,41 @@ namespace CustomFireSupport
             {
                 Log.Error("CAS missile visual repair failed: " + ex);
             }
+        }
+
+        private static Transform FindMissileBody(Transform root)
+        {
+            Transform best = root;
+            float bestVolume = 0f;
+            MeshFilter[] meshes = root.GetComponentsInChildren<MeshFilter>(true);
+            for (int i = 0; i < meshes.Length; i++)
+            {
+                MeshFilter mf = meshes[i];
+                if (mf == null || mf.sharedMesh == null ||
+                    mf.transform.name.StartsWith("CFS Motor Flame", StringComparison.Ordinal))
+                    continue;
+                Bounds b = mf.sharedMesh.bounds;
+                float volume = b.size.x * b.size.y * b.size.z;
+                if (volume > bestVolume)
+                {
+                    bestVolume = volume;
+                    best = mf.transform;
+                }
+            }
+            if (best == root)
+            {
+                SkinnedMeshRenderer[] skinned = root.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+                for (int i = 0; i < skinned.Length; i++)
+                {
+                    if (skinned[i] != null && skinned[i].sharedMesh != null &&
+                        !skinned[i].transform.name.StartsWith("CFS Motor Flame", StringComparison.Ordinal))
+                    {
+                        best = skinned[i].transform;
+                        break;
+                    }
+                }
+            }
+            return best;
         }
 
         private static bool LooksLikeDistortion(string name)
@@ -213,12 +280,9 @@ namespace CustomFireSupport
             Material found = CasBundleMaterialRepair.FindGameMaterial(name);
             if (_reported.Add(name))
             {
-                Log.Info("CAS round visual: effect material '" + name + "' " +
-                         (found != null
-                             ? "taken from the game (shader '" + found.shader.name + "')"
-                             : "has no loaded game copy - the bundled approximation is used for it"));
             }
             return found;
         }
     }
 }
+

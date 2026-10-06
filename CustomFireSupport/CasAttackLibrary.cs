@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using System.Text;
 using GHPC.Vehicle;
 using GHPC.Weaponry.CAS;
 using UnityEngine;
@@ -56,90 +55,6 @@ namespace CustomFireSupport
                 IndexLoadout(loadouts[i]);
             }
 
-            StringBuilder builder = new StringBuilder();
-            foreach (KeyValuePair<CASAttackType, List<GameObject>> pair in _hardpoints)
-            {
-                if (builder.Length > 0)
-                {
-                    builder.Append("; ");
-                }
-                builder.Append(pair.Key).Append(" x").Append(pair.Value.Count);
-            }
-            Log.Verbose("CAS hardpoint library: " + (builder.Length == 0 ? "empty" : builder.ToString()));
-
-            LogSessionSurveyOnce();
-        }
-
-        /// <summary>
-        /// Once per session, prints what attack types the game's own content can actually deliver and
-        /// which loaded AssetBundles could be pinned to keep scene-only assets alive across missions.
-        /// This is the evidence that decides between "harvest and pin bundles" and "construct gun
-        /// hardpoints at runtime": if no GunRun hardpoint is ever seen in loaded content, harvesting
-        /// scenes can never produce a gun run and only runtime construction can.
-        /// </summary>
-        private static bool _surveyLogged;
-
-        private static void LogSessionSurveyOnce()
-        {
-            if (_surveyLogged)
-            {
-                return;
-            }
-            _surveyLogged = true;
-
-            bool gunRun = false;
-            StringBuilder types = new StringBuilder();
-            foreach (KeyValuePair<CASAttackType, List<GameObject>> pair in _hardpoints)
-            {
-                if (pair.Key == CASAttackType.GunRun && pair.Value.Count > 0)
-                {
-                    gunRun = true;
-                }
-                if (types.Length > 0)
-                {
-                    types.Append(", ");
-                }
-                types.Append(pair.Key).Append(" x").Append(pair.Value.Count);
-                if (pair.Value.Count > 0)
-                {
-                    types.Append(" [").Append(pair.Value[0].name);
-                    if (pair.Value.Count > 1)
-                    {
-                        types.Append(" ...");
-                    }
-                    types.Append(']');
-                }
-            }
-
-            Log.Info("CAS hardpoint survey: " + (types.Length == 0
-                ? "no hardpoints in any loaded content yet"
-                : "loaded content can deliver " + types));
-
-            // Which AssetBundles are alive right now - pinning one of these is the only way to keep
-            // scene-referenced (non-addressable) CAS assets alive after the mission unloads.
-            StringBuilder bundles = new StringBuilder();
-            int bundleCount = 0;
-            IEnumerable<AssetBundle> loaded = AssetBundle.GetAllLoadedAssetBundles();
-            foreach (AssetBundle bundle in loaded)
-            {
-                if (bundle == null)
-                {
-                    continue;
-                }
-                bundleCount++;
-                if (bundles.Length > 0)
-                {
-                    bundles.Append(", ");
-                }
-                bundles.Append(bundle.name);
-            }
-            Log.Info("CAS hardpoint survey: " + bundleCount + " AssetBundle(s) loaded" +
-                     (bundles.Length > 0 ? ": " + bundles : string.Empty));
-
-            Log.Info("CAS hardpoint survey: GunRun hardpoint " +
-                     (gunRun
-                         ? "IS present in loaded content - harvesting + pinning can deliver gun runs."
-                         : "NOT found in any loaded content this session; a gun run needs a scene/bundle that carries a gun hardpoint, or a runtime-constructed gun hardpoint."));
         }
 
         /// <summary>True when at least one loaded hardpoint prefab can deliver the attack type.</summary>
@@ -238,3 +153,4 @@ namespace CustomFireSupport
         }
     }
 }
+

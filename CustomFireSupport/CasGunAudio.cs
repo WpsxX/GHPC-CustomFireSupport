@@ -16,15 +16,20 @@ namespace CustomFireSupport
     /// which also makes the range behaviour below possible - a single FMOD event could not express it.
     ///
     /// THE THREE-RANGE DESIGN. Each gun has a close, a mid and a far recording of the same burst. The
-    /// clip is chosen from the distance between the listener and the gun, and its volume is scaled by
-    /// inverse-square (1/r^2) so the sound keeps fading WITHIN a range instead of holding flat and
+    /// take is chosen from the distance between the listener and the gun, and its volume is scaled by
+    /// inverse-distance (1/r) so the sound keeps receding WITHIN a range instead of holding flat and
     /// jumping at the boundary. Result: one continuous fade as the aircraft closes in and recedes.
     ///
-    /// THE SOVIET GUN IS DIFFERENT. The GSh-30 recordings are a LOOP and its tail, not a one-shot:
-    ///   * "burst loop"  - looped for as long as the trigger is held,
-    ///   * "burst stop"  - played once when the burst ends, as the falling-off tail,
-    ///   * "far"         - used for BOTH the mid and the far range (the supplied set has no separate
-    ///                     mid clip for this gun).
+    /// NOTHING LOOPS. Every take is a complete recording that plays once and stops on its own. The
+    /// GSh-30 is the reason this matters: its fire and its spin-down are merged offline into a single
+    /// take (85% sustained fire, 15% spin-down, sized to one burst), so the sustained sound and its
+    /// ending arrive as one recording rather than as a loop that must be cut and handed over to a tail.
+    /// That removes an entire class of fault - an emitter whose owner is lost can no longer repeat
+    /// forever, it can only finish the take it was given.
+    ///
+    /// THE SPEED OF SOUND IS MODELLED. The burst is delayed by distance / 343 m/s, so a gun firing a
+    /// kilometre away is heard about 2.9 s after it fires, and the volume follows the distance while
+    /// the sound is in flight.
     /// </summary>
     internal static class CasGunAudio
     {
@@ -74,33 +79,67 @@ namespace CustomFireSupport
         // Clip names inside the bundle, per gun.
         // ------------------------------------------------------------------
 
-        internal sealed class GunSound
+        /// <summary>
+        /// One recording: the name it carries inside the bundle, and whether it is meant to repeat.
+        ///
+        /// Looping belongs to the RECORDING, not to the gun. Treating it as a property of the gun made
+        /// every take of the GSh-30 loop, including "CFS GSh30 far" - which is a one-shot distant
+        /// recording, so it repeated for as long as anything kept the emitter alive. That is the
+        /// "GSh-30 keeps looping after firing" report: a single flag let a one-shot take behave like a
+        /// loop, and the only reason a non-looping clip cannot do that is that it stops on its own.
+        /// </summary>
+        internal sealed class GunClip
         {
-            internal string Close;
-            internal string Mid;
-            internal string Far;
-            internal bool Loops;        // true for the GSh-30, whose burst is a looping recording
-            internal string StopTail;   // played once when a looping burst ends
+            internal string Name;
+            internal bool Loops;
         }
 
-        // The A-10's GAU-8: three separate recordings, each a complete burst.
+        internal sealed class GunSound
+        {
+            internal GunClip Close;
+            internal GunClip Mid;
+            internal GunClip Far;
+        }
+
+        /// <summary>
+        /// A take that plays once and stops on its own. Every recording the bundle ships is one of these:
+        /// since the GSh-30's fire and its spin-down are merged into a single clip, no take needs to
+        /// repeat any more. The flag is kept on the take rather than on the gun so that looping would
+        /// remain expressible per recording if a future take ever wants it.
+        /// </summary>
+        private static GunClip OneShot(string name)
+        {
+            return new GunClip { Name = name, Loops = false };
+        }
+
+        // The A-10's GAU-8: three separate complete takes, none of them a loop.
         private static readonly GunSound Gau8 = new GunSound
         {
-            Close = "CFS GAU8 close",
-            Mid = "CFS GAU8 mid",
-            Far = "CFS GAU8 far",
-            Loops = false
+            Close = OneShot("CFS GAU8 close"),
+            Mid = OneShot("CFS GAU8 mid"),
+            Far = OneShot("CFS GAU8 far")
         };
 
-        // The Soviet GSh-30: a loop plus its tail; mid and far share the "far" recording.
+        // The Soviet GSh-30. The close band plays ONE recording that already contains the whole event:
+        // the sustained fire followed by its spin-down, merged offline at 85% / 15% of the burst (see
+        // GSh30BurstSeconds below). Because that single take covers the firing AND its ending, this gun
+        // needs no loop and no separate stop-tail - which is what makes "it keeps looping after firing"
+        // structurally impossible rather than merely unlikely: no take of any gun repeats, so an emitter
+        // that somehow outlives its owner can only finish its one recording and go quiet.
         private static readonly GunSound Gsh30 = new GunSound
         {
-            Close = "CFS GSh30 burst loop",
-            Mid = "CFS GSh30 far",
-            Far = "CFS GSh30 far",
-            Loops = true,
-            StopTail = "CFS GSh30 burst stop"
+            Close = OneShot("CFS GSh30 combined"),
+            Mid = OneShot("CFS GSh30 far"),
+            Far = OneShot("CFS GSh30 far")
         };
+
+        /// <summary>
+        /// The merged GSh-30 take is cut to exactly one burst: 140 rounds at 3900 rpm = 2.15 s, of which
+        /// the sustained fire is the first 85% (1.8275 s) and the spin-down the last 15% (0.3225 s).
+        /// Kept here only so the number is documented next to the code that relies on it; nothing in the
+        /// runtime depends on the exact value, because the clip simply plays to its own end.
+        /// </summary>
+        private const float GSh30BurstSeconds = 140f / (3900f / 60f);   // = 2.1538 s
 
         private static AssetBundle _bundle;
         private static readonly Dictionary<string, AudioClip> _clips = new Dictionary<string, AudioClip>();
@@ -144,9 +183,6 @@ namespace CustomFireSupport
                         _clips[clip.name] = clip;
                     }
                 }
-
-                Log.Info("CAS gun audio: loaded " + _clips.Count + " clip(s) from '" +
-                         Path.GetFileName(path) + "' (" + DescribeClips() + ").");
             }
             catch (Exception ex)
             {
@@ -248,7 +284,8 @@ namespace CustomFireSupport
             {
                 Vector3 origin = source.position;
                 GunSound sound = SoundFor(airframeName);
-                AudioClip clip = PickClip(sound, DistanceToListener(origin));
+                GunClip take = PickClip(sound, DistanceToListener(origin));
+                AudioClip clip = take != null ? Clip(take.Name) : null;
                 if (clip == null)
                 {
                     return null;
@@ -267,7 +304,7 @@ namespace CustomFireSupport
                 audio.minDistance = 1f;
                 audio.maxDistance = 20000f;   // far enough not to clip the sound before we fade it
                 audio.dopplerLevel = 0f;      // the flight time is modelled explicitly below, not by Doppler
-                audio.loop = sound.Loops;
+                audio.loop = take.Loops;      // the TAKE decides, not the gun
                 audio.clip = clip;
                 audio.volume = 0f;            // set once the sound is actually due to be heard
 
@@ -298,10 +335,6 @@ namespace CustomFireSupport
                 // The pump must own this handle from now on: the burst ends long before a distant sound
                 // becomes audible, so the FIRING loop cannot be what drives the volume up.
                 TrackTail(handle);
-
-                Log.Verbose("CAS gun audio: '" + clip.name + "' scheduled " + delay.ToString("0.00") +
-                            "s from now (" + distance.ToString("0") + " m at " + SpeedOfSound +
-                            " m/s).");
                 return handle;
             }
             catch (Exception ex)
@@ -311,14 +344,15 @@ namespace CustomFireSupport
             }
         }
 
-        private static AudioClip PickClip(GunSound sound, float distance)
+        /// <summary>The take for this distance, or null when the band has no recording configured.</summary>
+        private static GunClip PickClip(GunSound sound, float distance)
         {
-            string name = distance <= CloseRange ? sound.Close
-                        : distance <= MidRange ? sound.Mid
-                        : sound.Far;
-            return Clip(name);
+            return distance <= CloseRange ? sound.Close
+                 : distance <= MidRange ? sound.Mid
+                 : sound.Far;
         }
 
+        /// <summary>Resolves a take's name to the loaded AudioClip, or null when the bundle lacks it.</summary>
         private static AudioClip Clip(string name)
         {
             AudioClip clip;
@@ -338,36 +372,20 @@ namespace CustomFireSupport
 
 
         /// <summary>
-        /// How long the stop tail is allowed to sound before it is faded out.
+        /// Ends the burst: the aircraft has stopped firing.
         ///
-        /// The supplied tail recording is 4.07 s, which is LONGER than the burst that produces it
-        /// (140 rounds at 3900 rpm = 2.15 s), so playing it in full would leave the tail dominating the
-        /// effect. It is therefore cut short and faded, which is what makes the ending sound like the
-        /// gun spinning down rather than a recording running on after the shooting stopped.
-        /// </summary>
-        private const float TailSeconds = 1.6f;
-
-        /// <summary>Length of the fade applied at the cut, in seconds. Long enough to avoid a click.</summary>
-        private const float TailFadeSeconds = 0.55f;
-
-        /// <summary>
-        /// Ends the burst.
+        /// THE RECORDING IS THE WHOLE EVENT, so it is left to play to its own end rather than being cut
+        /// here. The GSh-30's take already contains the sustained fire followed by its spin-down (merged
+        /// offline at 85% / 15% of the burst), and the GAU-8's takes are complete bursts whose own decay
+        /// is the ending. Cutting at this instant would truncate them: the sound is delayed by the speed
+        /// of sound, so at 500 m it has only been audible for about 0.7 s when the last round leaves the
+        /// barrel, and a hard stop there would clip most of the take away.
         ///
-        /// ONLY THE LOOPING GUN (GSh-30) IS TREATED SPECIALLY. Its sustained-fire recording is a loop,
-        /// so stopping it abruptly would cut mid-cycle; instead the stop-tail recording is played, which
-        /// continues the sound as the gun spins down, and that tail is faded out rather than played to
-        /// its full 4.07 s (see TailSeconds).
-        ///
-        /// THE GAU-8 IS LEFT ALONE: its three recordings are complete bursts whose own decay already
-        /// tails off, so they are simply stopped with the burst.
-        ///
-        /// THE SPEED-OF-SOUND DELAY IS RESPECTED: the burst is short (2.15 s) and the delay grows with
-        /// distance (2.9 s at 1 km), so a distant burst ends BEFORE it has been heard. Stopping the
-        /// source there would silence a shot that has not arrived yet, so in that case the clip is left
-        /// to play out - the aircraft has already stopped firing; the sound is simply still in flight.
-        ///
-        /// The emitter is anchored in the world rather than parented to the aircraft, so the tail keeps
-        /// the position the burst came from and cannot be destroyed with the aircraft mid-play.
+        /// Nothing loops any more, so letting a take run out is BOUNDED: the per-frame pump destroys the
+        /// emitter at <c>EndsAt</c>, and even if this method were never called at all - an exception
+        /// unwinding the burst coroutine, or the aircraft being destroyed mid-run - a non-repeating
+        /// recording stops by itself after one pass. That is what makes the "keeps looping after firing"
+        /// fault impossible rather than merely unlikely.
         /// </summary>
         internal static void End(Handle handle)
         {
@@ -376,132 +394,21 @@ namespace CustomFireSupport
                 return;
             }
 
-            AudioSource audio = handle.Source;
             handle.Firing = false;   // the shooting has stopped; the anchor stops following from here
-
-            // Not audible yet: the shots are still in flight. Let the scheduled clip play out rather
-            // than cutting a burst that the player has not heard. The per-frame pump brings the volume
-            // up when it arrives and tears the emitter down afterwards.
-            if (audio != null && Time.time < handle.StartedAt)
-            {
-                handle.Anchor = null;          // it is no longer being fired; stop following the aircraft
-                handle.EndsAt = handle.StartedAt + Mathf.Max(0.01f, audio.clip != null ? audio.clip.length : 0f);
-                handle.PendingEnd = true;
-                TrackTail(handle);
-                return;
-            }
-
-            if (audio == null || !handle.Sound.Loops)
-            {
-                // The GAU-8 (and any non-looping set): stop it with the burst.
-                try
-                {
-                    if (audio != null)
-                    {
-                        audio.Stop();
-                    }
-                }
-                catch (Exception)
-                {
-                    // stopping is best-effort
-                }
-                Release(handle);
-                return;
-            }
-
-            try
-            {
-                AudioClip tail = Clip(handle.Sound.StopTail);
-                if (tail != null)
-                {
-                    // Anchor the tail where the burst ended, in world space.
-                    if (handle.GameObject != null && handle.Anchor != null)
-                    {
-                        handle.GameObject.transform.position = handle.Anchor.position;
-                    }
-                    handle.Anchor = null;
-
-                    // The tail recording is designed to continue the loop, so it starts at its own
-                    // beginning - it picks up where the loop was cut.
-                    audio.loop = false;
-                    audio.clip = tail;
-                    audio.time = 0f;
-                    audio.Play();
-
-                    handle.Fading = true;
-                    handle.FadeFrom = Mathf.Max(audio.volume, MinVolume);
-                    handle.FadeSeconds = TailFadeSeconds;
-                    handle.DestroyAt = Time.time + TailSeconds;
-                    TrackTail(handle);
-                    return;
-                }
-            }
-            catch (Exception ex)
-            {
-                Log.Error("CAS gun audio: could not play the burst stop tail: " + ex);
-            }
-
-            try
-            {
-                if (handle.Source != null)
-                {
-                    handle.Source.Stop();
-                }
-            }
-            catch (Exception)
-            {
-                // stopping is best-effort
-            }
-            Release(handle);
-        }
-
-        /// <summary>
-        /// Advances a tail's fade and cleans it up when it is done. Returns false once the handle is
-        /// finished, so the caller can drop it.
-        /// </summary>
-        internal static bool UpdateTail(Handle handle)
-        {
-            if (handle == null || !handle.Fading)
-            {
-                return false;
-            }
+            handle.Anchor = null;
+            handle.PendingEnd = true;
 
             AudioSource audio = handle.Source;
-            if (audio == null || handle.GameObject == null)
+            float length = audio != null && audio.clip != null ? audio.clip.length : 0.5f;
+            handle.EndsAt = handle.StartedAt + Mathf.Max(0.01f, length);
+
+            // Belt and braces: with a non-repeating take the emitter cannot outlive its recording.
+            if (audio != null)
             {
-                handle.Fading = false;
-                return false;
+                audio.loop = false;
             }
 
-            try
-            {
-                // The tail is detached, so its distance no longer changes: its volume is the fade alone.
-                // The fade runs over the LAST FadeSeconds of the tail's life, so it holds its level
-                // first and then falls away - a cut straight to silence would click.
-                float timeLeft = handle.DestroyAt - Time.time;
-                if (timeLeft <= 0f)
-                {
-                    handle.Fading = false;
-                    Release(handle);
-                    return false;
-                }
-                if (timeLeft < handle.FadeSeconds && handle.FadeSeconds > 0f)
-                {
-                    audio.volume = handle.FadeFrom * Mathf.Clamp01(timeLeft / handle.FadeSeconds);
-                }
-                else
-                {
-                    audio.volume = handle.FadeFrom;
-                }
-            }
-            catch (Exception ex)
-            {
-                Log.Error("CAS gun audio: could not fade the burst tail: " + ex);
-                handle.Fading = false;
-                Release(handle);
-                return false;
-            }
-            return true;
+            TrackTail(handle);
         }
 
         /// <summary>Tears down a handle whose emitter is no longer needed.</summary>
@@ -522,7 +429,7 @@ namespace CustomFireSupport
             handle.Source = null;
         }
 
-        /// <summary>One playing burst. Owned by the burst coroutine so it can be updated and stopped.</summary>
+        /// <summary>One playing burst. Owned by the per-frame pump so it can be updated and torn down.</summary>
         internal sealed class Handle
         {
             internal AudioSource Source;
@@ -542,20 +449,15 @@ namespace CustomFireSupport
             internal float LastDistance;
 
             /// <summary>
-            /// Set when the burst ended before its sound arrived: the clip plays out on its own and the
-            /// emitter is torn down at <see cref="EndsAt"/> instead of being stopped immediately.
+            /// Set by <see cref="End"/> once the shooting has stopped. The take is left to play out and the
+            /// emitter is destroyed at <see cref="EndsAt"/>, which is also the hard upper bound on how long
+            /// any gun sound can live - so a handle that somehow loses its owner still cannot live forever.
             /// </summary>
             internal bool PendingEnd;
             internal float EndsAt;
-
-            // Stop-tail fade state (see End / UpdateTail).
-            internal bool Fading;
-            internal float FadeFrom;
-            internal float FadeSeconds;
-            internal float DestroyAt;
         }
 
-        /// <summary>Every tail still fading, pumped once per frame by the mod's update hook.</summary>
+        /// <summary>Every gun sound still alive, pumped once per frame by the mod's update hook.</summary>
         private static readonly List<Handle> _tails = new List<Handle>();
 
         /// <summary>
@@ -566,6 +468,10 @@ namespace CustomFireSupport
         /// (2.9 s at 1 km) while the burst itself only lasts 2.15 s, so the firing loop is long over by
         /// the time the sound should become audible. Driving the volume from there left every shot beyond
         /// ~700 m permanently silent.
+        ///
+        /// Every handle also has a hard end (<see cref="Handle.EndsAt"/>) set by <see cref="End"/>, so the
+        /// emitter can never outlive its recording by much even if the burst coroutine never got to call
+        /// End at all.
         /// </summary>
         internal static void PumpTails()
         {
@@ -575,22 +481,19 @@ namespace CustomFireSupport
 
                 if (!DriveVolume(handle))
                 {
-                    _tails.RemoveAt(i);
-                    continue;
-                }
-
-                // A burst whose sound had not arrived when the shooting stopped: let the clip finish,
-                // then tear the emitter down. Without this the sound still in flight would be cut off.
-                if (handle.PendingEnd && !handle.Fading && Time.time >= handle.EndsAt)
-                {
-                    handle.PendingEnd = false;
+                    // Finished. Destroy it here rather than only forgetting it: dropping the handle while
+                    // the emitter is still alive would leave a world-anchored AudioSource with no owner -
+                    // the shape of the original "sound keeps playing after firing" report.
                     Release(handle);
                     _tails.RemoveAt(i);
                     continue;
                 }
 
-                if (handle.Fading && !UpdateTail(handle))
+                // The take has played out (or its end is due): tear the emitter down.
+                if (handle.PendingEnd && Time.time >= handle.EndsAt)
                 {
+                    handle.PendingEnd = false;
+                    Release(handle);
                     _tails.RemoveAt(i);
                 }
             }
@@ -599,11 +502,12 @@ namespace CustomFireSupport
         /// <summary>
         /// Sets a live sound's volume for this frame from what it is doing right now.
         ///
-        /// Three phases, in order:
-        ///   * still travelling  - silent, and the anchor follows the aircraft while it is still firing;
-        ///   * audible           - the 1/r volume for the current distance, plus a clip swap for the
-        ///                         looping gun when the range band changes;
-        ///   * fading out        - handled by UpdateTail.
+        /// Two phases, in order:
+        ///   * still travelling - silent, and the anchor follows the aircraft while it is still firing;
+        ///   * audible          - the 1/r volume for the current distance.
+        ///
+        /// The take itself is fixed at <see cref="Begin"/> and is never exchanged: nothing loops, so
+        /// switching recording mid-burst could only restart a one-shot that is already playing.
         ///
         /// Returns false once the handle is finished and should be dropped.
         /// </summary>
@@ -618,11 +522,6 @@ namespace CustomFireSupport
             if (audio == null || handle.GameObject == null)
             {
                 return false;
-            }
-
-            if (handle.Fading)
-            {
-                return true;   // UpdateTail owns the volume from here
             }
 
             try
@@ -661,18 +560,10 @@ namespace CustomFireSupport
                 handle.LastDistance = distance;
                 audio.volume = VolumeFor(distance);
 
-                // A one-shot recording must not be swapped mid-play (it would restart); only the looping
-                // GSh-30 changes its bed, and there the swap is the point.
-                if (handle.Sound.Loops)
-                {
-                    AudioClip wanted = PickClip(handle.Sound, distance);
-                    if (wanted != null && wanted.name != handle.ClipName)
-                    {
-                        audio.clip = wanted;
-                        handle.ClipName = wanted.name;
-                        audio.Play();
-                    }
-                }
+                // The take is NOT exchanged here. Nothing loops any more, so every recording is a
+                // one-shot that is already playing: swapping it as the aircraft crosses a range band
+                // could only restart it from its beginning, which the player hears as a stutter. The
+                // take is therefore chosen once, in Begin, and only the volume follows the distance.
                 return true;
             }
             catch (Exception ex)
@@ -683,11 +574,10 @@ namespace CustomFireSupport
         }
 
         /// <summary>
-        /// Keeps a playing burst's volume in step with the distance, follows the aircraft while it is
-        /// still firing, and swaps the clip when the range band changes - so closing in or pulling away
-        /// is heard as one continuous change.
+        /// Keeps a playing burst's volume in step with the distance and follows the aircraft while it is
+        /// still firing, so closing in or pulling away is heard as one continuous change.
         ///
-        /// Kept as the firing-loop entry point so the coroutine can report when firing has stopped; the
+        /// Kept as the firing-loop entry point so the coroutine works the same way it always did; the
         /// per-frame pump does the actual work (see PumpTails).
         /// </summary>
         internal static void Update(Handle handle)
@@ -751,3 +641,4 @@ namespace CustomFireSupport
         }
     }
 }
+

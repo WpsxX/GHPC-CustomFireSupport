@@ -14,7 +14,7 @@
 >   
 > Requires: MelonLoader 0.6.x + Harmony (bundled with MelonLoader)
 >   
-> Version: **v1.0.3**
+> Version: **v1.0.4**
 
 The mod puts **6 configurable slots** on the mission map's fire-support panel.
   
@@ -219,6 +219,11 @@ Values (comma-separated, multiple allowed; `Any` or empty = no filter, i.e. ever
 
 ## 6. Changelog
 
+### v1.0.4
+
+- Fixed bugs and optimized logic.
+- Added Su-25 and Kh-25 models.
+
 ### v1.0.3
 
 - Fixed CAS calls that occasionally failed to send an aircraft.
@@ -245,3 +250,9 @@ this mod took started there, and credit and thanks go to its author. No code is 
 fire-support system here (the slots, the CAS payload factory, the cluster munition) is this mod's own
   
 implementation.
+
+**Models.** The **Su-25** and **Kh-25** models are downloaded from Sketchfab and are both licensed under
+Creative Commons (CC):
+
+- [Su-25](https://sketchfab.com/3d-models/su-25-88b71eb848cf4418a95dff497c07cefc)
+- [Su Kh-25ML (War Thunder)](https://sketchfab.com/3d-models/su-kh-25ml-war-thunder-71e9333f0c624f75a0de263a3308ac84)

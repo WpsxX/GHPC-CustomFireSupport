@@ -117,7 +117,7 @@ namespace CustomFireSupport
         internal string ShellName = string.Empty;
         internal string SubmunitionName = string.Empty;
 
-        /// <summary>Diagnostics: how many times this object has opened (should be exactly one per shot).</summary>
+        /// <summary>Number of times this object has opened during its current lifetime.</summary>
         internal int Bursts;
 
         internal Vector3 BurstPoint
@@ -186,22 +186,8 @@ namespace CustomFireSupport
             {
                 SpawnSubmunition(carrier, burstPoint, i);
             }
-
-            Log.Info("cluster munition: '" + carrier.ShellName + "' opened " +
-                     carrier.BurstHeight.ToString("0") + " m above the called point and released " +
-                     count + " x " + carrier.SubmunitionName +
-                     " (" + burstPoint.ToString("0.#") + ").");
-
-            if (CustomFireSupportMod.VerboseLogging)
+            if (false)
             {
-                Log.Verbose("cluster munition: burst point " + burstPoint.ToString("0.##") +
-                            ", aim point " + carrier.AimPoint.ToString("0.##") +
-                            ", submunition speed " + ClusterMunition.SubmunitionSpeedMetersPerSecond.ToString("0") +
-                            " m/s +/- " + ClusterMunition.SubmunitionSpeedSpreadMinMetersPerSecond.ToString("0") +
-                            "-" + ClusterMunition.SubmunitionSpeedSpreadMaxMetersPerSecond.ToString("0") +
-                            " m/s per submunition, in a " +
-                            ClusterMunition.ReleaseConeHalfAngleDegrees.ToString("0") +
-                            " deg cone around straight down.");
             }
         }
 
@@ -510,12 +496,8 @@ namespace CustomFireSupport
                 thrown++;
             }
 
-            if (thrown > 0 && CustomFireSupportMod.VerboseLogging)
+            if (false && thrown > 0)
             {
-                Log.Verbose("cluster fragments: threw " + thrown + " fragment(s) at " + origin.ToString("0.#") +
-                            " (" + ClusterMunitionFactory.HedpMinSpallRha.ToString("0") + "-" +
-                            ClusterMunitionFactory.HedpMaxSpallRha.ToString("0") + " mm RHAe each, " +
-                            SpeedMetersPerSecond.ToString("0") + " m/s, all directions).");
             }
         }
 
@@ -566,3 +548,4 @@ namespace CustomFireSupport
         }
     }
 }
+

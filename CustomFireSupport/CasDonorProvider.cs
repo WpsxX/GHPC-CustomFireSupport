@@ -73,8 +73,6 @@ namespace CustomFireSupport
             }
             else
             {
-                Log.Info("CAS templates: " + templates.Count + " candidate(s) collected (turn on VerboseLogging for the full list).");
-                Log.Verbose("CAS templates: " + Describe(templates));
             }
             return templates;
         }
@@ -130,9 +128,6 @@ namespace CustomFireSupport
                 int sceneLoadouts = AddSceneLoadouts(templates);
                 if (sceneLoadouts > 0)
                 {
-                    Log.Verbose("CAS roster: " + sceneLoadouts + " extra loadout pairing(s) from the mission " +
-                                "scene added onto the bundle airframes (" + (templates.Count - before) +
-                                " template(s)).");
                 }
 
                 Log.Verbose("CAS roster: " + fromBundle + " bundle template(s), " + templates.Count +
@@ -271,9 +266,8 @@ namespace CustomFireSupport
                 {
                     own = HardpointManagerLoadoutRef(manager);
                 }
-                catch (Exception ex)
+                catch
                 {
-                    Log.Verbose("could not read '" + prefab.name + "'s own loadout: " + ex.Message);
                 }
 
                 if (own != null && own.Loadout != null && own.Loadout.HardpointPrefabs != null &&
@@ -382,10 +376,6 @@ namespace CustomFireSupport
             // them is a native access violation that kills the process - see
             // FireSupportTemplates.FindArtilleryEffectPrefab. It was also redundant: the airframe prefabs
             // come from the pinned cas_assets bundle and are already covered by the typed scans above.
-
-            Log.Verbose("CAS donor scan: " + donors.Count + " airframe object(s), " + loadouts.Count + " loadout asset(s) loaded.");
-
-
             for (int i = 0; i < donors.Count; i++)
             {
                 GameObject donor = donors[i];
@@ -398,9 +388,8 @@ namespace CustomFireSupport
                     {
                         own = HardpointManagerLoadoutRef(manager);
                     }
-                    catch (Exception ex)
+                    catch
                     {
-                        Log.Verbose("could not read the airframe's own loadout: " + ex.Message);
                     }
                 }
 
@@ -426,7 +415,6 @@ namespace CustomFireSupport
 
                 if (own == null && loadouts.Count == 0)
                 {
-                    Log.Verbose("loaded airframe '" + donor.name + "' has no usable loadout asset - skipped.");
                 }
             }
         }
@@ -581,9 +569,6 @@ namespace CustomFireSupport
             // emptying every slot.
             if (CasPrewarmer.HasBundleAirframes && !CasPrewarmer.IsBundledAirframe(prefab))
             {
-                Log.Verbose("CAS template skipped: airframe '" + prefab.name + "' (" + source +
-                            ") is not one of the bundle's prefabs, so it is not eligible (" +
-                            CasPrewarmer.BundleAirframeNames.Length + " bundled airframe(s) only).");
                 return 0;
             }
 
@@ -592,8 +577,6 @@ namespace CustomFireSupport
             // flies its pass and never fires. Drop it instead of offering a dead sortie.
             if (manager == null)
             {
-                Log.Verbose("CAS template skipped: airframe '" + prefab.name +
-                            "' carries no CASHardpointManager, so it could never fire.");
                 return 0;
             }
 
@@ -607,9 +590,6 @@ namespace CustomFireSupport
             // is paired with an unrelated loadout asset, so the fit is checked here instead.
             if (_enforceFit && !FitsAirframe(manager, loadout.Loadout))
             {
-                Log.Verbose("CAS template skipped: loadout '" + loadout.name + "' (" +
-                            Count(loadout.Loadout.HardpointPrefabs) + " hardpoint prefab(s)) does not fit airframe '" +
-                            prefab.name + "' (" + AttachCount(manager) + " attach point(s)).");
                 return 0;
             }
 
@@ -748,3 +728,5 @@ namespace CustomFireSupport
         }
     }
 }
+
+

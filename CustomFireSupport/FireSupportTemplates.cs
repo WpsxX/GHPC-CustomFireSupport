@@ -1,4 +1,4 @@
-﻿using HarmonyLib;
+using HarmonyLib;
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -312,7 +312,6 @@ namespace CustomFireSupport
                         builder.Append('\'').Append(pair.Value[i].Describe()).Append('\'');
                     }
                 }
-                Log.Info("shell templates: " + builder);
             }
             return templates;
         }
@@ -416,12 +415,10 @@ namespace CustomFireSupport
                 }
             }
 
-            if (best != null && CustomFireSupportMod.VerboseLogging)
+            if (false && best != null)
             {
                 // Both sides are listed: this is how the faction specific shell names a mission happens to
                 // have loaded are identified, whichever side the player is on.
-                Log.Verbose(DescribeEffectCandidates(illumination, Faction.Blue, best));
-                Log.Verbose(DescribeEffectCandidates(illumination, Faction.Red, best));
             }
             return best;
         }
@@ -496,9 +493,8 @@ namespace CustomFireSupport
                 profile.InterShotSeconds = BatteryInterShotRef(battery);
                 profile.DispersionMeters = BatteryDispersionRef(battery);
             }
-            catch (System.Exception ex)
+            catch
             {
-                Log.Verbose("could not read battery '" + profile.SourceName + "' internals: " + ex.Message);
             }
             return profile;
         }
@@ -998,3 +994,5 @@ namespace CustomFireSupport
         }
     }
 }
+
+

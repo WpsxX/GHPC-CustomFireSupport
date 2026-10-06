@@ -131,9 +131,6 @@ namespace CustomFireSupport
 
                     float before = PassesRef(__instance);
                     PassesRef(__instance) = 1f;
-
-                    Log.Verbose("CAS flight: '" + __instance.gameObject.name + "' passes " + before +
-                                " -> 1, so this run ends in LeaveArea instead of another orbit.");
                 }
                 catch (Exception ex)
                 {
@@ -169,8 +166,6 @@ namespace CustomFireSupport
                     if (before != 1f)
                     {
                         PassesRef(__instance) = 1f;
-                        Log.Verbose("CAS flight: '" + __instance.gameObject.name + "' passes " + before +
-                                    " -> 1 at the end of the attack, so it leaves the area.");
                     }
                 }
                 catch (Exception ex)
@@ -181,3 +176,4 @@ namespace CustomFireSupport
         }
     }
 }
+

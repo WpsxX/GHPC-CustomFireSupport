@@ -14,7 +14,7 @@
 >   
 > 依赖：MelonLoader 0.6.x + Harmony（随 MelonLoader 附带）
 >   
-> 版本：**v1.0.3**
+> 版本：**v1.0.4**
 
 本 mod 在任务地图的「火力支援」面板上提供 **6 个可自定义槽位**。
   
@@ -209,6 +209,11 @@
 ---
 ## 6. 更新日志
 
+### v1.0.4
+
+- 修复 bug、优化逻辑。
+- 新增 Su-25 与 Kh-25 模型。
+
 ### v1.0.3
 
 - 修复 CAS 呼叫失败。
@@ -232,3 +237,8 @@
 第一个把 GHPC 的火力支援做成"玩家可以自己改造的东西"的社区 mod。本 mod 的方向源自它，在此致谢。
   
 **与它没有代码共用**：这里的火力支援系统（槽位、CAS 载荷工厂、集束弹）都是本 mod 的独立实现。
+
+**模型致谢**：**Su-25** 与 **Kh-25** 模型下载自 Sketchfab，均为 Creative Commons（CC）授权：
+
+- [Su-25](https://sketchfab.com/3d-models/su-25-88b71eb848cf4418a95dff497c07cefc)
+- [Su Kh-25ML（War Thunder）](https://sketchfab.com/3d-models/su-kh-25ml-war-thunder-71e9333f0c624f75a0de263a3308ac84)

@@ -57,6 +57,17 @@ namespace CustomFireSupport
         private static readonly AccessTools.FieldRef<CASHardpoint, string> AudioEventRef =
             AccessTools.FieldRefAccess<CASHardpoint, string>("_audioEvent");
 
+        // Visible-munition mode. BOTH fields are GameObject[] - note that _munitionSpawnPoints is NOT a
+        // Transform[]: CASHardpoint reads `_munitionSpawnPoints[i].transform`, so the object spawned from
+        // and the object shown on the pylon are the same GameObject, and the game indexes both arrays by
+        // TotalMunitionsLaunched, so they must be the same length. Getting this type wrong makes
+        // FieldRefAccess throw while these static fields initialise, which takes CasPayloadFactory's type
+        // initialiser down with it and silently kills slot building.
+        private static readonly AccessTools.FieldRef<CASHardpoint, GameObject[]> VisibleMunitionObjectsRef =
+            AccessTools.FieldRefAccess<CASHardpoint, GameObject[]>("_visibleMunitionObjects");
+        private static readonly AccessTools.FieldRef<CASHardpoint, GameObject[]> MunitionSpawnPointsRef =
+            AccessTools.FieldRefAccess<CASHardpoint, GameObject[]>("_munitionSpawnPoints");
+
         /// <summary>
         /// FMOD one-shot played by CASHardpoint for every round. GHPC has no GAU-8 / GSh-30-2 event of
         /// its own; this is the game's only 30mm autocannon single-shot (the BMP-2 2A42), which is the
@@ -122,8 +133,6 @@ namespace CustomFireSupport
 
         private static bool _gunBurstEventWarned;
 
-        private static bool _sampleLogged;
-
         /// <summary>
         /// A runtime hardpoint prefab able to deliver the requested attack type, or null.
         ///
@@ -168,7 +177,6 @@ namespace CustomFireSupport
                     Log.Warn("CAS payload factory: no loaded ammo matches '" + profile.GunId + "' (hints: " +
                              string.Join(", ", profile.AmmoHints) + ") for " + type + " on '" + airframeName +
                              "'; that attack type stays unavailable here.");
-                    LogLoadedSample(profile);
                     return null;
                 }
                 else
@@ -182,11 +190,6 @@ namespace CustomFireSupport
                 GameObject go = Build(type, profile, codex, accuracy);
                 AttachGunBelt(go, airframeName, codex);
                 _built[key] = go;
-                Log.Info("CAS payload factory: built runtime " + type + " hardpoint '" + profile.GunId +
-                         "' for '" + airframeName + "' (donor round '" +
-                         (codex.AmmoType != null ? codex.AmmoType.Name : codex.name) +
-                         "', accuracy " + accuracy.ToString("0.##") + " = " +
-                         AccuracyRadius(accuracy).ToString("0.##") + " m impact circle).");
                 return go;
             }
             catch (Exception ex)
@@ -209,6 +212,9 @@ namespace CustomFireSupport
         /// <summary>Cached result of the missile prefab lookup (the bundle is loaded once per session).</summary>
         private static readonly Dictionary<string, GameObject> _missilePrefabs = new Dictionary<string, GameObject>();
 
+        /// <summary>The visible pylon missile body, looked up in the bundle once per session.</summary>
+        private static readonly Dictionary<string, GameObject> _pylonBodies = new Dictionary<string, GameObject>();
+
         /// <summary>One bomb donor per side (Nato / Pact / Unknown), looked up once each.</summary>
         private static readonly AmmoCodexScriptable[] _bombDonors = new AmmoCodexScriptable[3];
         private static readonly bool[] _bombDonorSearched = new bool[3];
@@ -223,7 +229,20 @@ namespace CustomFireSupport
         {
             AirframeSide side = CasAirframeCatalog.GuessSide(airframeName);
             CasAirframeCatalog.MissileProfile profile = CasAirframeCatalog.MissileFor(side);
-            string key = "AirToGroundMissile/" + profile.PrefabHint + "/disp" + accuracy.ToString("0.###");
+
+            // THE CACHE KEY MUST INCLUDE WHETHER THIS AIRFRAME GETS A VISIBLE BODY.
+            //
+            // The payload differs by airframe: one whose own model already shows an air-to-ground missile
+            // (the A-10 bakes an AGM-65 onto each LAU rail) must keep the invisible mount, while an airframe
+            // that shows none (the F-15) gets a real body hung on the pylon. Caching on the profile and
+            // dispersion alone made the FIRST airframe to build it decide for all of them - so whichever of
+            // the two was drawn first, the other silently inherited its payload. In the reported run the
+            // A-10 was drawn first, its body-less hardpoint was cached, and the F-15 then flew with an empty
+            // pylon: 'muzzle attached (nothing shown on the pylon)' appears once, for the A-10, and the
+            // F-15's build was never even attempted.
+            bool mountsBody = !HasBakedMissileBody(airframeName) && FindPylonBodyPrefab(profile) != null;
+            string key = "AirToGroundMissile/" + profile.PrefabHint + "/disp" + accuracy.ToString("0.###") +
+                         (mountsBody ? "/body" : "/bare");
 
             GameObject existing;
             if (_built.TryGetValue(key, out existing) && existing != null)
@@ -258,15 +277,8 @@ namespace CustomFireSupport
 
             try
             {
-                GameObject go = BuildMissileHardpoint(profile, bomb, visual, accuracy);
+                GameObject go = BuildMissileHardpoint(profile, airframeName, bomb, visual, accuracy);
                 _built[key] = go;
-                Log.Info("CAS payload factory: built runtime AirToGroundMissile hardpoint for '" +
-                         airframeName + "' - model '" + visual.name + "' (" + profile.MissileId + ", pinned to " +
-                         profile.Airframe + "), TOW flight effects, data cloned from bomb '" +
-                         (bomb.AmmoType != null ? bomb.AmmoType.Name : bomb.name) + "' (TNT " +
-                         bomb.AmmoType.TntEquivalentKg.ToString("0.#") + " kg, accuracy " +
-                         accuracy.ToString("0.##") + " = " + AccuracyRadius(accuracy).ToString("0.##") +
-                         " m impact circle).");
                 return go;
             }
             catch (Exception ex)
@@ -419,13 +431,34 @@ namespace CustomFireSupport
 
         /// <summary>
         /// The speed the mod's flight resolver PINS a round of ours to, in m/s (0 = no pin; the round keeps
-        /// its own current speed). An air-to-ground missile flies its WHOLE flight at this speed - the
-        /// profile's Mach 1.2 - so its speed no longer depends on how fast the launching aircraft was
-        /// going. Both sides' missile profiles use the same figure, so the value can be taken from either.
+        /// its own current speed). An air-to-ground missile flies its WHOLE flight at its own profile's
+        /// speed, so the figure no longer depends on how fast the launching aircraft was going - and no
+        /// longer comes from ONE profile applied to both, which is what made the Kh-25 fly at the AGM-65's
+        /// speed.
         /// </summary>
+        /// <summary>
+        /// The missile profile a built round belongs to, or null for anything that is not ours. The flight
+        /// resolver needs it for the trajectory angles (climb while burning, dive after shutdown).
+        /// </summary>
+        internal static CasAirframeCatalog.MissileProfile ProfileFor(AmmoType ammo)
+        {
+            if (ammo == null || !IsOurMissile(ammo))
+            {
+                return null;
+            }
+            return CasAirframeCatalog.MissileById(ammo.Name);
+        }
+
         internal static float CruiseSpeedFor(AmmoType ammo)
         {
-            return IsOurMissile(ammo) ? CasAirframeCatalog.NatoMissile.CruiseSpeedMeters : 0f;
+            if (ammo == null || !IsOurMissile(ammo))
+            {
+                return 0f;
+            }
+            // The factory stamps profile.MissileId onto the round's Name, so the round itself says which
+            // profile it belongs to.
+            CasAirframeCatalog.MissileProfile profile = CasAirframeCatalog.MissileById(ammo.Name);
+            return profile != null ? profile.CruiseSpeedMeters : CasAirframeCatalog.NatoMissile.CruiseSpeedMeters;
         }
 
         /// <summary>
@@ -467,6 +500,84 @@ namespace CustomFireSupport
         }
 
         /// <summary>
+        /// The transform CASHardpoint.LaunchSingleMunition will actually fire from, applying the same choice
+        /// the game makes (`_visibleMunitions` fires from the slot's spawn point, otherwise from the single
+        /// muzzle). CASHardpoint spawns the round along this transform's FORWARD and then aligns its
+        /// velocity to it, so aiming it is how the mod aims the launch itself.
+        /// </summary>
+        internal static Transform LaunchTransformOf(CASHardpoint hardpoint)
+        {
+            if (hardpoint == null)
+            {
+                return null;
+            }
+            if (VisibleMunitionsRef(hardpoint))
+            {
+                GameObject[] points = MunitionSpawnPointsRef(hardpoint);
+                if (points != null && points.Length > 0)
+                {
+                    int index = Mathf.Clamp(hardpoint.TotalMunitionsLaunched, 0, points.Length - 1);
+                    if (points[index] != null)
+                    {
+                        return points[index].transform;
+                    }
+                }
+            }
+            return SpawnPointRef(hardpoint);
+        }
+
+        /// <summary>
+        /// Points the launch at the locked target, within limits, and returns the angle it had to correct
+        /// (degrees, negative when it did nothing).
+        ///
+        /// WHY: the round leaves along the launch point's forward and inherits that direction, so a missile
+        /// fired with the aircraft pointing anywhere but at its target has to TURN onto it after launch. At
+        /// the profile's ~Mach 1 that costs hundreds of metres, which is why a close-range or off-axis shot
+        /// used to sail past the target, loop back and hit nothing. Real Maverick and Kh-25 launches happen
+        /// with the seeker/designator already on the target, so the launch is aimed here too - but only
+        /// within <see cref="MaxLaunchAimDegrees"/> of the aircraft's own nose, so a wildly off-axis shot
+        /// still behaves like a missile that was fired outside its launch envelope instead of snapping to
+        /// the target from nowhere.
+        /// </summary>
+        internal static float AimLaunchAt(CASHardpoint hardpoint, Vector3 target, out string note)
+        {
+            note = null;
+            Transform launch = LaunchTransformOf(hardpoint);
+            if (launch == null)
+            {
+                return -1f;
+            }
+
+            Vector3 toTarget = target - launch.position;
+            if (toTarget.sqrMagnitude < 1f)
+            {
+                return -1f; // the target is on top of the aircraft: nothing sane to aim at
+            }
+            Vector3 wanted = toTarget.normalized;
+            float offAxis = Vector3.Angle(launch.forward, wanted);
+            if (offAxis < 0.5f)
+            {
+                return 0f; // already aimed
+            }
+
+            if (offAxis > MaxLaunchAimDegrees)
+            {
+                // Too far off to be a launch: aim at the nearest direction inside the limit, so the round
+                // still leaves pointing as close to the target as the aircraft's attitude allows.
+                note = "target is " + offAxis.ToString("0") + " deg off the launch axis (limit " +
+                       MaxLaunchAimDegrees.ToString("0") + " deg): the launch is only corrected to the limit";
+                wanted = Vector3.RotateTowards(launch.forward, wanted, MaxLaunchAimDegrees * Mathf.Deg2Rad, 0f);
+                offAxis = MaxLaunchAimDegrees;
+            }
+
+            launch.rotation = Quaternion.LookRotation(wanted, Vector3.up);
+            return offAxis;
+        }
+
+        /// <summary>How far off the aircraft's own nose the mod will aim a launch.</summary>
+        private const float MaxLaunchAimDegrees = 45f;
+
+        /// <summary>
         /// The impact point offset for one round: a draw from the slot's impact circle, or EXACTLY the
         /// target's own centre for a guaranteed-hit missile (CasAccuracy is then irrelevant by design).
         /// </summary>
@@ -483,7 +594,7 @@ namespace CustomFireSupport
         /// </summary>
 
         private static GameObject BuildMissileHardpoint(CasAirframeCatalog.MissileProfile profile,
-            AmmoCodexScriptable bomb, GameObject visual, float accuracyScale)
+            string airframeName, AmmoCodexScriptable bomb, GameObject visual, float accuracyScale)
         {
             AmmoType ammo = CloneAmmoType(bomb.AmmoType);
             ammo.Name = profile.MissileId;
@@ -504,9 +615,40 @@ namespace CustomFireSupport
             // Custom = the round's visual is ours: the marshaller destroys it instead of pooling it with
             // the bombs (which would hand a later bomb a missile model).
             ammo.VisualType = LiveRoundMarshaller.LiveRoundVisualType.Custom;
-            // Everything else - Category / ShortName / TntEquivalentKg / RhaPenetration / Mass / Coeff /
-            // SectionalArea / spall / fuzes / impact effect descriptor / decal / ImpactAudio - stays the
-            // bomb's, which is what "the missile uses the bomb's data" means.
+            // THE WARHEAD IS THE MISSILE'S OWN, not the donor bomb's.
+            //
+            // Category decides the damage MODEL in the game (LiveRound sets _isHeat from ShapedCharge, which
+            // switches the round to a molten jet and the Ce spall tables), ShortName decides how the round is
+            // classified and labelled, and TntEquivalentKg is the charge the blast model reads. Everything
+            // else - RhaPenetration / Mass / SectionalArea / spall / fuzes / impact effect descriptor / decal
+            // / ImpactAudio - still stays the bomb's.
+            //
+            // RhaPenetration is deliberately NOT touched: for a shaped charge the game takes penetration from
+            // it (OldLiveRound: `if (_isHeat && !_jetActive) return Info.RhaPenetration`), so a HEAT warhead
+            // inherits the donor bomb's figure - 90 mm RHA from the Mk-82, 100 from the FAB-250. That is the
+            // "keep everything else" behaviour; set RhaPenetrationMm here to change it.
+            if (profile.Warhead == CasAirframeCatalog.WarheadKind.ShapedCharge)
+            {
+                ammo.Category = AmmoType.AmmoCategory.ShapedCharge;
+                ammo.ShortName = AmmoType.AmmoShortName.Heat;
+            }
+            else
+            {
+                ammo.Category = AmmoType.AmmoCategory.Explosive;
+                ammo.ShortName = AmmoType.AmmoShortName.He;
+            }
+            if (profile.WarheadChargeKilograms > 0f)
+            {
+                ammo.TntEquivalentKg = profile.WarheadChargeKilograms;
+            }
+            // PENETRATION IS THE FIGURE THAT DECIDES WHAT A SHAPED CHARGE DEFEATS. LiveRound takes it from
+            // RhaPenetration for a ShapedCharge round (and derives the jet's travel from it), so leaving the
+            // donor's value would give a HEAT warhead a general-purpose bomb's 90 mm. A profile that does not
+            // set it (0) keeps the donor's figure, which is what the high-explosive Kh-25 wants.
+            if (profile.RhaPenetrationMm > 0f)
+            {
+                ammo.RhaPenetration = profile.RhaPenetrationMm;
+            }
 
             AmmoCodexScriptable codex = ScriptableObject.CreateInstance<AmmoCodexScriptable>();
             codex.name = profile.MissileId;
@@ -524,18 +666,142 @@ namespace CustomFireSupport
             // CasImpactAimPatch, which flies it to the impact point (see UsesImpactResolver).
             DeviationRef(hardpoint) = profile.DeviationDegrees;
             InheritVelocityRef(hardpoint) = true;      // a missile leaves with the aircraft's speed
-            VisibleMunitionsRef(hardpoint) = false;
-            MunitionCountRef(hardpoint) = profile.Munitions;
             LaunchCountRef(hardpoint) = 1;
 
+            // The launch point. With a visible body that body IS the launch point, so the missile leaves
+            // from exactly where it was hanging and pointing; without one, an invisible child at the
+            // hardpoint's origin is used (which sits on the pylon attach point).
             GameObject muzzle = new GameObject("Muzzle");
             muzzle.transform.SetParent(go.transform, false);
             muzzle.transform.localPosition = Vector3.zero;
             muzzle.transform.localRotation = Quaternion.identity;
-            SpawnPointRef(hardpoint) = muzzle.transform;
 
-            VerifyMissileHardpoint(hardpoint, profile, bomb, visual, codex);
+            GameObject pylonBody = BuildPylonBody(airframeName, go, profile);
+            if (pylonBody != null)
+            {
+                // Visible-munition mode: capacity = the array length (1), the missile is fired from the
+                // mounted body's own transform, and the body is hidden by the game on launch.
+                VisibleMunitionsRef(hardpoint) = true;
+                VisibleMunitionObjectsRef(hardpoint) = new[] { pylonBody };
+                // The mounted body is only a display object. The flying round must spawn from its own
+                // muzzle/ShotVisual instance, otherwise CASHardpoint hides the same object at launch and
+                // the Kh-25 disappears together with its pylon mount.
+                MunitionSpawnPointsRef(hardpoint) = new[] { muzzle };
+                MunitionCountRef(hardpoint) = 1;        // ignored while _visibleMunitions is true
+                SpawnPointRef(hardpoint) = muzzle.transform;
+
+                Debug.Log("[CAS payload factory] AirToGroundMissile on '" + airframeName +
+                          "' hangs a VISIBLE missile body on the pylon ('" + pylonBody.name +
+                          "'); it disappears when the missile is fired.");
+            }
+            else
+            {
+                // No body available (or the airframe's own model already shows one): the missile is not
+                // visible while mounted and simply appears at launch.
+                VisibleMunitionsRef(hardpoint) = false;
+                MunitionCountRef(hardpoint) = profile.Munitions;
+                SpawnPointRef(hardpoint) = muzzle.transform;
+            }
+
             return go;
+        }
+
+        /// <summary>
+        /// The visible missile body to hang on the pylon, parented to the runtime hardpoint, or null when
+        /// the missile stays invisible.
+        ///
+        /// IT IS ONLY MOUNTED WHERE THE MODEL DOES NOT ALREADY SHOW ONE. GHPC bakes an AGM-65 into the
+        /// A-10's model on each LAU-117 / LAU-118 rail as a permanently visible child, so mounting a second
+        /// body would leave the A-10 carrying missiles that never fire. The F-15 (a mod addition) has no
+        /// such child, which is exactly the case this exists for.
+        ///
+        /// Only the NATO missile has a body: GHPC ships no standalone Soviet air-to-ground missile mesh, so
+        /// the Pact profile keeps the invisible mount it has always had.
+        /// </summary>
+        private static GameObject BuildPylonBody(string airframeName, GameObject hardpoint,
+            CasAirframeCatalog.MissileProfile profile)
+        {
+            if (hardpoint == null || HasBakedMissileBody(airframeName))
+            {
+                return null;
+            }
+
+            GameObject prefab = FindPylonBodyPrefab(profile);
+            if (prefab == null)
+            {
+                return null;
+            }
+
+            GameObject body = UnityEngine.Object.Instantiate(prefab, hardpoint.transform, false);
+            body.name = "CFS " + (profile != null ? profile.MissileId : "missile") + " (pylon body)";
+            body.transform.localPosition = Vector3.zero;
+            body.transform.localRotation = Quaternion.identity;
+            body.transform.localScale = Vector3.one;
+
+            // A body with nothing to draw would silently turn the mount invisible for no reason.
+            if (body.GetComponentsInChildren<Renderer>(true).Length == 0)
+            {
+                Log.Warn("CAS payload factory: the pylon missile body prefab '" + prefab.name +
+                         "' has no renderer, so the missile stays invisible on the pylon.");
+                UnityEngine.Object.Destroy(body);
+                return null;
+            }
+            return body;
+        }
+
+        /// <summary>
+        /// True for airframes whose own model already shows an air-to-ground missile, verified against the
+        /// exported Unity project: A10.prefab contains a permanently visible 'AGM65' (on LAU117) and
+        /// 'AGM066' (on LAU118) mesh child. Mounting our own body as well would leave unfired missiles on
+        /// the wings.
+        /// </summary>
+        private static bool HasBakedMissileBody(string airframeName)
+        {
+            if (string.IsNullOrEmpty(airframeName))
+            {
+                return false;
+            }
+            string lower = airframeName.ToLowerInvariant();
+            return lower.Contains("a10") || lower.Contains("a-10");
+        }
+
+        /// <summary>
+        /// The extracted missile body inside our bundle, for the side the profile belongs to. Its name
+        /// deliberately does NOT contain the flying missile's hint ("agm-65" / "kh-25"), so
+        /// FindMissilePrefab cannot pick the pylon body instead of the flying missile.
+        ///
+        /// This used to return ONE prefab for everything, which was harmless while the only body was the
+        /// AGM-65 and only NATO airframes mounted it - but a Soviet airframe flying the Kh-25 would have
+        /// been shown carrying an American missile.
+        /// </summary>
+        private static GameObject FindPylonBodyPrefab(CasAirframeCatalog.MissileProfile profile)
+        {
+            string hint = profile == null || string.IsNullOrEmpty(profile.PylonBodyHint)
+                ? "pylon agm65"
+                : profile.PylonBodyHint;
+            string key = hint.ToLowerInvariant();
+
+            GameObject cached;
+            if (_pylonBodies.TryGetValue(key, out cached))
+            {
+                return cached;
+            }
+
+            List<GameObject> bundle = CasPrewarmer.BundlePrefabs;
+            for (int i = 0; i < bundle.Count; i++)
+            {
+                GameObject prefab = bundle[i];
+                if (prefab != null && prefab.name.ToLowerInvariant().Contains(key))
+                {
+                    _pylonBodies[key] = prefab;
+                    return prefab;
+                }
+            }
+            _pylonBodies[key] = null;
+            Log.Warn("CAS payload factory: the bundle does not carry the pylon missile body '" + hint +
+                     "', so " + (profile != null ? profile.MissileId : "the missile") +
+                     " is not shown on the pylon until it is fired. Rebuild cas_assets with CasBundleRebuild.");
+            return null;
         }
 
         /// <summary>
@@ -544,100 +810,6 @@ namespace CustomFireSupport
         /// proves the assembly without anyone having to inspect the aircraft: every field the game needs is
         /// checked through the accessors the game itself uses.
         /// </summary>
-        private static void VerifyMissileHardpoint(CASHardpoint hardpoint, CasAirframeCatalog.MissileProfile profile,
-            AmmoCodexScriptable bomb, GameObject visual, AmmoCodexScriptable codex)
-        {
-            List<string> problems = new List<string>();
-
-            if (hardpoint.Type != CASAttackType.AirToGroundMissile)
-            {
-                problems.Add("type is " + hardpoint.Type);
-            }
-            if (AmmoRef(hardpoint) != codex && hardpoint.Ammo == null)
-            {
-                problems.Add("no ammo");
-            }
-
-            AmmoType ammo = hardpoint.Ammo;
-            if (ammo == null)
-            {
-                problems.Add("ammo type is null");
-            }
-            else
-            {
-                if (!ReferenceEquals(ammo.ShotVisual, visual))
-                {
-                    problems.Add("ShotVisual is not the missile model");
-                }
-                if (bomb != null && bomb.AmmoType != null)
-                {
-                    if (ReferenceEquals(ammo.ShotVisual, bomb.AmmoType.ShotVisual))
-                    {
-                        problems.Add("ShotVisual is still the bomb's");
-                    }
-                    if (ammo.TntEquivalentKg != bomb.AmmoType.TntEquivalentKg)
-                    {
-                        problems.Add("TNT " + ammo.TntEquivalentKg.ToString("0.#") + " kg is not the bomb's " +
-                                     bomb.AmmoType.TntEquivalentKg.ToString("0.#") + " kg");
-                    }
-                    if (ammo.ImpactAudio != bomb.AmmoType.ImpactAudio)
-                    {
-                        problems.Add("impact audio is not the bomb's");
-                    }
-                    if (ammo.Category != bomb.AmmoType.Category || ammo.ShortName != bomb.AmmoType.ShortName)
-                    {
-                        problems.Add("warhead category/short name is not the bomb's");
-                    }
-                }
-                if (ammo.Guidance != AmmoType.GuidanceType.Unguided)
-                {
-                    problems.Add("guidance is " + ammo.Guidance + ", the mod cannot fly it");
-                }
-            }
-
-            if (hardpoint.TotalMunitionsCapacity != profile.Munitions)
-            {
-                problems.Add("munitions " + hardpoint.TotalMunitionsCapacity + " != " + profile.Munitions);
-            }
-            if (SpawnPointRef(hardpoint) == null)
-            {
-                problems.Add("no muzzle transform");
-            }
-            if (!hardpoint.InheritVelocity)
-            {
-                problems.Add("does not inherit the aircraft's speed (bomb data launches at 0 m/s)");
-            }
-            if (ammo != null && ammo.MuzzleVelocity < profile.BoostVelocityMeters - 1f)
-            {
-                problems.Add("no motor boost (MuzzleVelocity " + ammo.MuzzleVelocity.ToString("0") + " m/s)");
-            }
-            if (ammo != null && bomb != null && bomb.AmmoType != null &&
-                ammo.Coeff >= bomb.AmmoType.Coeff - 0.0001f)
-            {
-                problems.Add("drag was not scaled down (Coeff " + ammo.Coeff.ToString("0.###") + ")");
-            }
-
-            if (problems.Count == 0)
-            {
-                Log.Info("CAS missile payload check: OK - " + profile.MissileId + " on " + profile.Airframe +
-                         ", model '" + visual.name + "', data cloned from bomb '" +
-                         (bomb != null && bomb.AmmoType != null ? bomb.AmmoType.Name : "?") + "' (TNT " +
-                         (ammo != null ? ammo.TntEquivalentKg.ToString("0.#") : "?") + " kg, impact audio " +
-                         (ammo != null ? ammo.ImpactAudio.ToString() : "?") + "), " +
-                         hardpoint.TotalMunitionsCapacity + " missile(s), unguided + mod-flown, muzzle attached, " +
-                         "motor boost " + (ammo != null ? ammo.MuzzleVelocity.ToString("0") : "?") +
-                         " m/s over the aircraft's speed, drag x" + profile.DragScale.ToString("0.##") +
-                         " (Coeff " + (ammo != null ? ammo.Coeff.ToString("0.###") : "?") + "), cruise floor " +
-                         profile.CruiseSpeedMeters.ToString("0") + " m/s.");
-            }
-            else
-            {
-                Log.Warn("CAS missile payload check FAILED for " + profile.MissileId + ": " +
-                         string.Join("; ", problems.ToArray()) +
-                         " - report this line, the payload will not behave as intended.");
-            }
-        }
-
         /// <summary>The bomb hardpoint's own release audio, when the mission loaded one.</summary>
         private static string BombAudioEvent()
         {
@@ -653,7 +825,7 @@ namespace CustomFireSupport
         /// a second apart, released further out than a bomb (a missile is a stand-off weapon). Called from
         /// CustomSlotBuilder when it synthesizes the AirToGroundMissile attack entry.
         /// </summary>
-        internal static void ApplyMissileAttackProfile(CASAttackMeta meta, Faction airframeFaction)
+        internal static void ApplyMissileAttackProfile(CASAttackMeta meta, Faction airframeFaction, int stations)
         {
             if (meta == null)
             {
@@ -663,13 +835,27 @@ namespace CustomFireSupport
             AirframeSide side = airframeFaction == Faction.Red ? AirframeSide.Pact : AirframeSide.Nato;
             CasAirframeCatalog.MissileProfile profile = CasAirframeCatalog.MissileFor(side);
 
-            meta.TriggerPulls = Mathf.Max(1, profile.Munitions);
-            meta.TriggerPullInterval = 1.1f;
+            // TWO PULLS, 1.5 SECONDS APART. The player's requirement: both mounted missiles go at the same
+            // target set, released as early as the run allows, but with a short interval rather than truly
+            // together - so the second round leaves the rail a beat after the first and each of them attacks
+            // its own target (the second missile is handed the next unclaimed enemy by CasTargetSpreadPatch
+            // at attach time, so on a single-target battlefield both go to that one). This is not the rocket
+            // pattern: rockets ripple many rounds down one line, whereas here it is two guided rounds, each
+            // with its own target and its own flight. (The aircraft's turn-in geometry itself still comes
+            // from the game's CASController.GetTurnToAttackTarget.)
+            meta.TriggerPulls = Mathf.Max(1, stations);
+            meta.TriggerPullInterval = 1.5f;
             meta.FireAllAtOnce = false;
-            meta.ApproachDistance = 3200f;
+            // The run starts a kilometre outside the release range, so the aircraft is already settled on the
+            // target when it reaches it: CASHardpoint releases on raw range, and an approach distance equal to
+            // the release distance would have the aircraft still turning in when the missile left the rail.
+            // The run used to start a kilometre outside the release range, which had the aircraft flying a long
+            // run-up before the player saw anything happen. Now it starts just outside - the aircraft commits
+            // immediately and the missiles leave the rails as soon as the target is in range.
+            meta.ApproachDistance = profile.ReleaseDistanceMeters + 150f;
             meta.ReleaseDistance = profile.ReleaseDistanceMeters;
-            meta.PreDelay = 0.5f;
-            meta.PostDelay = 0.5f;
+            meta.PreDelay = 0.2f;
+            meta.PostDelay = 0.2f;
         }
 
         /// <summary>True for a missile round this factory built (reference match, not name match).</summary>
@@ -897,6 +1083,19 @@ namespace CustomFireSupport
         private static Vector3 _pendingOffset;
         private static AmmoType _pendingAmmo;
         private static bool _pendingGravityAware;
+        private static Transform _pendingCarrier;
+        private static Unit _pendingUnit;
+        private static readonly Dictionary<AmmoType, PendingImpact> _pendingImpacts = new Dictionary<AmmoType, PendingImpact>();
+
+        private sealed class PendingImpact
+        {
+            internal Transform Target;
+            internal Vector3 Offset;
+            internal AmmoType Ammo;
+            internal bool GravityAware;
+            internal Transform Carrier;
+            internal Unit Unit;
+        }
 
         /// <summary>
         /// Records the impact point of the round about to be spawned. CASHardpoint.SpawnMunition does
@@ -906,14 +1105,33 @@ namespace CustomFireSupport
         /// The ammo is stashed as well: if SpawnMunition ever returns without calling Init (or throws),
         /// a stale stash may otherwise be claimed by the next round of any other hardpoint, and the
         /// Init postfix only accepts a round firing exactly this ammo.
+        ///
+        /// The carrier is stashed too, and only the air-to-ground missile uses it: a laser-guided round
+        /// (CasMissileGuidance) has to know which aircraft is painting its spot, because the beam is only
+        /// visible to it while that aircraft's nose is pointed at the target.
         /// </summary>
-        internal static void SetPendingImpact(Transform target, Vector3 offset, AmmoType ammo, bool gravityAware)
+        internal static void SetPendingImpact(Transform target, Vector3 offset, AmmoType ammo, bool gravityAware,
+            Transform carrier, Unit unit = null)
         {
+            if (ammo != null)
+            {
+                _pendingImpacts[ammo] = new PendingImpact
+                {
+                    Target = target,
+                    Offset = offset,
+                    Ammo = ammo,
+                    GravityAware = gravityAware,
+                    Carrier = carrier
+                    ,Unit = unit
+                };
+            }
             _pendingImpact = target != null && ammo != null;
             _pendingTarget = target;
             _pendingOffset = offset;
             _pendingAmmo = ammo;
             _pendingGravityAware = gravityAware;
+            _pendingCarrier = carrier;
+            _pendingUnit = unit;
         }
 
         internal static void ClearPendingImpact()
@@ -923,17 +1141,33 @@ namespace CustomFireSupport
             _pendingOffset = Vector3.zero;
             _pendingAmmo = null;
             _pendingGravityAware = false;
+            _pendingCarrier = null;
+            _pendingUnit = null;
         }
 
         /// <summary>Hands the stash to the round that just finished LiveRound.Init, if it is that round.</summary>
         internal static bool ConsumePendingImpact(AmmoType ammo, out Transform target, out Vector3 offset,
-            out bool gravityAware)
+            out bool gravityAware, out Transform carrier, out Unit unit)
         {
+            PendingImpact pending;
+            if (ammo != null && _pendingImpacts.TryGetValue(ammo, out pending))
+            {
+                _pendingImpacts.Remove(ammo);
+                bool valid = pending.Target != null && ReferenceEquals(ammo, pending.Ammo);
+                target = valid ? pending.Target : null;
+                offset = valid ? pending.Offset : Vector3.zero;
+                gravityAware = valid && pending.GravityAware;
+                carrier = valid ? pending.Carrier : null;
+                unit = valid ? pending.Unit : null;
+                return valid;
+            }
             bool mine = _pendingImpact && _pendingTarget != null && ammo != null &&
                         ReferenceEquals(ammo, _pendingAmmo);
             target = mine ? _pendingTarget : null;
             offset = mine ? _pendingOffset : Vector3.zero;
             gravityAware = mine && _pendingGravityAware;
+            carrier = mine ? _pendingCarrier : null;
+            unit = mine ? _pendingUnit : null;
             ClearPendingImpact();
             return mine;
         }
@@ -1101,11 +1335,6 @@ namespace CustomFireSupport
 
             if (best != null && best.AmmoType != null)
             {
-                Log.Verbose("CAS payload factory: HE donor round = '" + best.AmmoType.Name +
-                            "' (category " + best.AmmoType.Category + ", impact effect " +
-                            best.AmmoType.ImpactEffectDescriptor.ImpactCategory + "/" +
-                            best.AmmoType.ImpactEffectDescriptor.EffectSize + ", impact audio " +
-                            best.AmmoType.ImpactAudio + ").");
                 return best;
             }
 
@@ -1186,8 +1415,6 @@ namespace CustomFireSupport
                 }
                 builder.Append(belt[i].AmmoType != null ? belt[i].AmmoType.Name : belt[i].name);
             }
-            Log.Info("CAS payload factory: gun belt for '" + airframeName + "' = " + builder +
-                     " (no tracers, 140 rounds, 3900 rpm).");
         }
 
         /// <summary>
@@ -1249,7 +1476,6 @@ namespace CustomFireSupport
                     {
                         _gunBurstEvent = candidate;
                         _gunBurstEventResolved = true;
-                        Log.Info("CAS gun audio: sustained fire event = '" + candidate + "'.");
                         return _gunBurstEvent;
                     }
                 }
@@ -1659,53 +1885,6 @@ namespace CustomFireSupport
                    lower.Contains("apbc");
         }
 
-        /// <summary>Logs currently loaded ammo names relevant to the profile so hints can be tuned.</summary>
-        private static void LogLoadedSample(CasAirframeCatalog.GunProfile profile)
-        {
-            if (_sampleLogged)
-            {
-                return;
-            }
-            _sampleLogged = true;
-
-            List<string> names = new List<string>();
-            AmmoCodexScriptable[] codexes = Resources.FindObjectsOfTypeAll<AmmoCodexScriptable>();
-            for (int i = 0; i < codexes.Length; i++)
-            {
-                AmmoCodexScriptable codex = codexes[i];
-                if (codex == null || codex.AmmoType == null)
-                {
-                    continue;
-                }
-                AmmoType ammo = codex.AmmoType;
-                string name = ammo.Name;
-                if (string.IsNullOrEmpty(name))
-                {
-                    continue;
-                }
-                string lower = name.ToLowerInvariant();
-
-                bool relevant = profile.AmmoHints != null;
-                if (relevant)
-                {
-                    relevant = false;
-                    for (int h = 0; h < profile.AmmoHints.Length; h++)
-                    {
-                        if (lower.Contains(profile.AmmoHints[h].ToLowerInvariant()))
-                        {
-                            relevant = true;
-                            break;
-                        }
-                    }
-                }
-                if (relevant || (lower.Contains("mm") && LooksLikeAutocannonRound(lower)))
-                {
-                    names.Add(name + " (" + ammo.MuzzleVelocity + " m/s)");
-                }
-            }
-            Log.Info("CAS payload factory: relevant ammo currently loaded: " +
-                     (names.Count == 0 ? "none" : string.Join(" | ", names.ToArray())));
-        }
     }
 
     /// <summary>
@@ -1762,6 +1941,7 @@ namespace CustomFireSupport
     {
         /// <summary>The locked target's centre (Unit.Center); re-read every frame.</summary>
         internal Transform Target;
+        internal Transform DynamicTarget;
 
         /// <summary>The round's fixed world-space offset from that centre: its own point in the circle.</summary>
         internal Vector3 Offset;
@@ -1790,3 +1970,7 @@ namespace CustomFireSupport
         internal bool Released;
     }
 }
+
+
+
+

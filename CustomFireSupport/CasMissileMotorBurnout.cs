@@ -13,7 +13,7 @@ namespace CustomFireSupport
     /// "CFS Motor Flame ...", so this component only has to switch them off:
     ///
     ///   * the booster flame goes out after <see cref="BoosterBurnSeconds"/> (a booster is a launch stage);
-    ///   * after <see cref="SustainBurnSeconds"/> the motor itself shuts down: the sustainer flame, the
+    ///   * after this round's own burn time the motor itself shuts down: the sustainer flame, the
     ///     smoke trail, the heat distortion, the engine light and the engine audio loop ALL go out
     ///     together, exactly as the player asked - the smoke trail disappears with the engine. The trail is
     ///     stopped with StopEmittingAndClear and then cleared, so the smoke already in the air goes with the
@@ -28,8 +28,17 @@ namespace CustomFireSupport
         /// <summary>Booster stage burn time in seconds (launch flame).</summary>
         internal const float BoosterBurnSeconds = 1.6f;
 
-        /// <summary>Sustainer burn time in seconds: the flame goes out this long after launch.</summary>
-        internal const float SustainBurnSeconds = 5f;
+        /// <summary>
+        /// The motor's burn time in seconds when the round's own profile does not say (a rocket round, or a
+        /// missile whose profile could not be resolved): the figure the player originally asked for.
+        ///
+        /// The two missiles do NOT share it - the AGM-65 is a short boost and then glides with no smoke at
+        /// all, the Kh-25 burns for most of its flight - so CasImpactAttachPatch calls
+        /// <see cref="SetBurnSeconds"/> with MissileProfile.MotorBurnSeconds as the round spawns.
+        /// </summary>
+        internal const float DefaultBurnSeconds = 5f;
+
+        private float _burnSeconds = DefaultBurnSeconds;
 
         private const string FlamePrefix = "CFS Motor Flame";
 
@@ -44,6 +53,24 @@ namespace CustomFireSupport
         private bool _boosterOut;
         private bool _motorOut;
 
+        /// <summary>Sets this round's motor burn time, before the clock starts (i.e. right after spawning).</summary>
+        internal void SetBurnSeconds(float seconds)
+        {
+            if (seconds > 0.1f)
+            {
+                _burnSeconds = seconds;
+            }
+        }
+
+        /// <summary>
+        /// True while the motor is still burning. Kept for the log and for anything that wants the motor's
+        /// own clock; the guidance uses its profile's own figure (the two are the same value, set together).
+        /// </summary>
+        internal bool MotorBurning
+        {
+            get { return !_motorOut; }
+        }
+
         private void Update()
         {
             try
@@ -55,13 +82,13 @@ namespace CustomFireSupport
 
                 _age += Time.deltaTime;
 
-                if (!_boosterOut && _age >= BoosterBurnSeconds)
+                if (!_boosterOut && _age >= Mathf.Min(BoosterBurnSeconds, _burnSeconds * 0.5f))
                 {
                     _boosterOut = true;
                     SetFlamesOff("booster");
                 }
 
-                if (!_motorOut && _age >= SustainBurnSeconds)
+                if (!_motorOut && _age >= _burnSeconds)
                 {
                     _motorOut = true;
                     int count = SetFlamesOff(null);
@@ -70,7 +97,7 @@ namespace CustomFireSupport
                     int audio = StopAudio();
                     // These custom visuals are destroyed rather than pooled. All timed work is done.
                     enabled = false;
-                    Log.Info("CAS missile motor: burnout after " + SustainBurnSeconds.ToString("0.#") +
+                    Log.Info("CAS missile motor: burnout after " + _burnSeconds.ToString("0.#") +
                              " s of flight - " + count + " flame object(s) off, " + trail +
                              ", " + audio + " engine audio source(s) off, " + lights +
                              " light(s) off; nothing is left trailing behind the missile for the rest of the flight.");
@@ -214,3 +241,4 @@ namespace CustomFireSupport
         }
     }
 }
+

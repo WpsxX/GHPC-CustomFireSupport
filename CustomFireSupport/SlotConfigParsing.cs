@@ -69,7 +69,7 @@ namespace CustomFireSupport
         /// `&gt; 1` = wider still.
         ///
         /// Pure math, so it lives here where the headless tests can reach it; the game-side
-        /// CasPayloadFactory uses it for the sampling and the diagnostics.
+        /// CasPayloadFactory uses it for impact sampling.
         /// </summary>
         public const float CasAccuracyRadiusAtOne = 15f;
 
@@ -596,3 +596,4 @@ namespace CustomFireSupport
         }
     }
 }
+

@@ -2,7 +2,7 @@ using System;
 using MelonLoader;
 //using UnityEngine;
 
-[assembly: MelonInfo(typeof(CustomFireSupport.CustomFireSupportMod), "CustomFireSupport", "1.0.1", "WpsxX")]
+[assembly: MelonInfo(typeof(CustomFireSupport.CustomFireSupportMod), "CustomFireSupport", "1.0.4", "WpsxX")]
 [assembly: MelonGame("Radian Simulations LLC", "GHPC")]
 
 namespace CustomFireSupport
@@ -23,11 +23,6 @@ namespace CustomFireSupport
         internal static CustomFireSupportMod Instance;
 
         /// <summary>Forwarded to the log helper; refreshed every time the config is read.</summary>
-        internal static bool VerboseLogging
-        {
-            get { return CustomSupportRegistry.Global != null && CustomSupportRegistry.Global.VerboseLogging; }
-        }
-
         public override void OnInitializeMelon()
         {
             Instance = this;
@@ -36,7 +31,6 @@ namespace CustomFireSupport
             {
                 ConfigSchema.Initialize();
                 HarmonyInstance.PatchAll();
-                Log.Info("loaded (v1.0.1). Config file: Bin\\UserData\\MelonPreferences.cfg -> [CustomFireSupport] (keys Slot1_* .. Slot6_*)");
                 Log.Info("The slots are built at the start of every mission; edit the cfg and restart the mission to apply changes.");
             }
             catch (Exception ex)
@@ -48,16 +42,16 @@ namespace CustomFireSupport
         public override void OnSceneWasLoaded(int buildIndex, string sceneName)
         {
             CasBundleMaterialRepair.ClearSceneIndex();
-            // Drop all references to the previous mission's objects; the scene destroyed them already.
             CustomSupportRegistry.ResetForScene();
-            // Re-arm the CAS firing-chain diagnostics (per-sortie audits and refusal reports).
-            CasFireChainRepair.ResetForScene();
             CasCallReadinessRepair.ResetForScene();
             CasFlightBehaviourRepair.ResetForScene();
+            // Drop the laser-run holds: they name aircraft transforms of the mission that just ended.
+            CasLaserRunHold.ResetForScene();
+            // Forget the missile attack runs' go-arounds: they name controllers of the mission that ended.
+            CasMissileAttackRun.ResetForScene();
             // Earliest safe moment of a session to pull the configured addressable CAS assets into
             // memory (main menu / bootstrap scenes load first). No-op once done or when unconfigured.
             CasPrewarmer.EnsurePrewarmed();
-            Log.Verbose("scene loaded: " + sceneName);
         }
 
         public override void OnSceneWasInitialized(int buildIndex, string sceneName)
@@ -70,7 +64,9 @@ namespace CustomFireSupport
         {
             try
             {
-                CustomSupportRegistry.Tick();
+                FireSupportPatches.CasTargetSpreadPatch.Tick();
+                    CasMissileAttackRun.Tick();
+CustomSupportRegistry.Tick();
             }
             catch (Exception ex)
             {
@@ -90,3 +86,5 @@ namespace CustomFireSupport
         }
     }
 }
+
+

@@ -17,6 +17,7 @@ namespace CustomFireSupport
         /// suppression) fire missions keep working exactly as before.
         /// </summary>
         public bool HideVanillaFireSupport = true;
+        public bool VerboseLogging = false;
 
         /// <summary>
         /// true = illumination slots only appear at night (vanilla behaviour). false (default) = the
@@ -31,7 +32,6 @@ namespace CustomFireSupport
         public bool SmokeOnlyDuringDay = true;
 
         /// <summary>Print template discovery / per-slot resolution details to the log.</summary>
-        public bool VerboseLogging = false;
 
         /// <summary>
         /// Only used when a mission scene contains no CasSupportManager at all: the mod creates one
@@ -190,3 +190,4 @@ namespace CustomFireSupport
         }
     }
 }
+

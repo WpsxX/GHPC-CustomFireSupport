@@ -75,12 +75,22 @@ namespace CustomFireSupport
         // ------------------------------------------------------------------
 
         /// <summary>
-        /// The 8 CAS airframes the bundle ships, keyed by the prefab name used inside the bundle.
+        /// The CAS airframes the bundle ships, keyed by the prefab name used inside the bundle.
         /// These are the models the mod may summon; nothing else is eligible.
+        ///
+        /// F15 belongs to this list even though GHPC ships no F15 prefab: the aircraft exists only as
+        /// scene objects in the game's terrain scenes, so it was extracted into one (CasF15Extract) and
+        /// added to the bundle alongside the other eight. Keep this list and CasBundleRebuild's Airframes
+        /// array in step - a name listed here that the bundle lacks is reported loudly by
+        /// ReportAirframeCatalogue.
+        ///
+        /// SU25 likewise has no prefab in the game: it is the player's own OBJ model, reconstructed into an
+        /// airframe by CasSu25Build from the components a CAS aircraft needs. It is the Red side's
+        /// designated gun-run aircraft.
         /// </summary>
         internal static readonly string[] BundleAirframeNames =
         {
-            "A10", "F104", "F4_LW", "F4_USAF", "MiG17", "MiG21", "MiG23BN", "SU22"
+            "A10", "F104", "F4_LW", "F4_USAF", "F15", "MiG17", "MiG21", "MiG23BN", "SU22", "SU25"
         };
 
         private static readonly Dictionary<string, GameObject> _airframesByName =
@@ -349,7 +359,6 @@ namespace CustomFireSupport
             string[] keys = ParseKeys(configured);
             if (keys == null || keys.Length == 0)
             {
-                Log.Verbose("CAS pre-warm: no extra addressable keys configured ('" + configured + "').");
                 return;
             }
 
@@ -382,13 +391,9 @@ namespace CustomFireSupport
                     if (capable)
                     {
                         casCapable++;
-                        Log.Info("CAS pre-warm: loaded '" + key + "' -> " + prefab.name + " (CAS-capable).");
                     }
                     else
                     {
-                        Log.Verbose("CAS pre-warm: loaded '" + key + "' -> " + prefab.name +
-                                    " but it carries no CASController/CASHardpointManager, so it cannot feed " +
-                                    "the CAS donor scan.");
                     }
                 }
                 catch (Exception ex)
@@ -678,3 +683,4 @@ namespace CustomFireSupport
         }
     }
 }
+

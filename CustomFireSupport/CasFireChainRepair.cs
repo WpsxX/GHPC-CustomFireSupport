@@ -44,8 +44,6 @@ namespace CustomFireSupport
     ///
     /// So this file does two things:
     ///
-    ///   * it makes the chain observable - one audit line per sortie at loadout time, and one line
-    ///     whenever an attack is about to be refused, both through the mod's logger;
     ///   * it removes the failure modes themselves for the mod's own sorties: the attack type is
     ///     corrected to one the sortie can actually fire, a loadout the game would refuse is repaired
     ///     before DoConfig sees it, a stuck _busyFiring cannot survive a burst, and a gun run can no
@@ -56,14 +54,6 @@ namespace CustomFireSupport
     /// </summary>
     internal static class CasFireChainRepair
     {
-        /// <summary>Aircraft already audited this session, so a repeated loadout set does not repeat it.</summary>
-        private static readonly HashSet<int> Audited = new HashSet<int>();
-
-        internal static void ResetForScene()
-        {
-            Audited.Clear();
-        }
-
         /// <summary>
         /// True when the controller is flying one of the mod's sorties. Delegates to the hardpoint test
         /// the rest of the mod uses, so "ours" has exactly one definition: the CustomCasMarker the
@@ -127,11 +117,14 @@ namespace CustomFireSupport
             GameObject[] prefabs = body.HardpointPrefabs;
             int attachPoints = manager.HardpointAttachPoints == null ? 0 : manager.HardpointAttachPoints.Length;
 
+            // What the game's DoConfig is about to be handed, BEFORE any repair below can change it.
+            // "over N hardpoint(s)" when the loadout was built and "N hardpoint prefab(s)" here must agree;
+            // when they do not, something rewrote the array between the two, and this says what.
             if (prefabs == null || prefabs.Length == 0)
             {
                 Log.Warn("CAS fire chain: the loadout for '" + manager.gameObject.name +
                          "' carries no hardpoint prefab at all; the game refuses to configure it, so this " +
-                         "sortie cannot fire. (attack entries: " + DescribeAttacks(body.Attacks) + ")");
+                         "sortie cannot fire because its loadout has no hardpoint prefab.");
                 return false;
             }
             if (!CasFireChainRules.HardpointListFits(prefabs.Length, attachPoints))
@@ -168,120 +161,7 @@ namespace CustomFireSupport
             return true;
         }
 
-        /// <summary>
-        /// One line per sortie: what the game will be able to fire, and the reason if it cannot fire
-        /// anything. Called after SetLoadout, i.e. after DoConfig has run, so it reports the state the
-        /// firing chain will actually see.
-        /// </summary>
-        internal static void AuditSortie(CASController controller, CASLoadoutScriptable loadout)
-        {
-            try
-            {
-                if (controller == null || !Audited.Add(controller.GetInstanceID()))
-                {
-                    return;
-                }
-                if (!IsOurSortie(controller))
-                {
-                    Audited.Remove(controller.GetInstanceID());
-                    return;
-                }
-
-                CASHardpointManager manager = ManagerOf(controller);
-                if (manager == null)
-                {
-                    Log.Warn("CAS fire chain: sortie '" + controller.name + "' has no CASHardpointManager, so " +
-                             "the game never configures a loadout and the aircraft can never fire.");
-                    return;
-                }
-
-                CASHardpoint[] points = manager.GetComponentsInChildren<CASHardpoint>(true);
-                StringBuilder mounted = new StringBuilder();
-                int totalRounds = 0;
-                for (int i = 0; i < points.Length; i++)
-                {
-                    CASHardpoint point = points[i];
-                    if (point == null) continue;
-                    if (mounted.Length > 0) mounted.Append(", ");
-                    mounted.Append(point.Type).Append('=').Append(point.TotalMunitionsRemaining)
-                          .Append('/').Append(point.TotalMunitionsCapacity);
-                    totalRounds += point.TotalMunitionsRemaining;
-                }
-
-                Log.Info("CAS fire chain: sortie '" + controller.name + "' flew with " +
-                         (loadout != null && loadout.Loadout != null
-                             ? loadout.Loadout.HardpointPrefabs != null
-                                 ? loadout.Loadout.HardpointPrefabs.Length + " hardpoint prefab(s)"
-                                 : "no hardpoint prefab list"
-                             : "no loadout") +
-                         " over " + (manager.HardpointAttachPoints == null ? 0 : manager.HardpointAttachPoints.Length) +
-                         " attach point(s); mounted: " + (mounted.Length == 0 ? "(none)" : mounted.ToString()) +
-                         "; attack entries: " +
-                         (loadout != null && loadout.Loadout != null
-                             ? DescribeAttacks(loadout.Loadout.Attacks)
-                             : "(none)") + ".");
-
-                // The two ways the firing chain goes quiet, reported the moment the sortie starts rather
-                // than after the player has watched an aircraft drop nothing.
-                for (int i = 0; i < CasFireChainRules.AttackTypes.Length; i++)
-                {
-                    bool mountedType = false;
-                    for (int p = 0; p < points.Length; p++)
-                    {
-                        if (points[p] != null && points[p].Type == CasFireChainRules.AttackTypes[i] && points[p].TotalMunitionsRemaining > 0)
-                        {
-                            mountedType = true;
-                            break;
-                        }
-                    }
-                    bool metaExists = manager.GetAttackMetaByType(CasFireChainRules.AttackTypes[i]) != null;
-                    if (mountedType && !metaExists)
-                    {
-                        Log.Warn("CAS fire chain: the sortie carries " + CasFireChainRules.AttackTypes[i] + " pylons with rounds " +
-                                 "but its loadout declares no " + CasFireChainRules.AttackTypes[i] + " attack entry. If the game " +
-                                 "picks that type the attack cannot fire: EnterState reads the missing entry " +
-                                 "without a null check, and Fire() abandons the run without a word. The type " +
-                                 "is corrected at pick time instead (CasAttackTypeGuard).");
-                    }
-                    else if (!mountedType && metaExists && points.Length > 0)
-                    {
-                        Log.Verbose("CAS fire chain: attack entry " + CasFireChainRules.AttackTypes[i] +
-                                    " exists with no pylon behind it (harmless: CanDoAttackType stays false).");
-                    }
-                }
-
-                if (totalRounds == 0 && points.Length > 0)
-                {
-                    Log.Warn("CAS fire chain: every mounted pylon of this sortie reports zero rounds left, " +
-                             "so the game will refuse the attack as 'out of munitions'.");
-                }
-            }
-            catch (Exception ex)
-            {
-                Log.Error("CAS fire chain audit failed: " + ex);
-            }
-        }
-
-        private static string DescribeAttacks(CASAttackMeta[] attacks)
-        {
-            if (attacks == null || attacks.Length == 0)
-            {
-                return "(none - the aircraft would fly its pass without firing)";
-            }
-            StringBuilder builder = new StringBuilder();
-            for (int i = 0; i < attacks.Length; i++)
-            {
-                if (attacks[i] == null)
-                {
-                    continue;
-                }
-                if (builder.Length > 0) builder.Append(", ");
-                builder.Append(attacks[i].UniqueType).Append("(pulls=").Append(attacks[i].TriggerPulls)
-                       .Append(", allAtOnce=").Append(attacks[i].FireAllAtOnce ? 1 : 0).Append(')');
-            }
-            return builder.Length == 0 ? "(none - the aircraft would fly its pass without firing)" : builder.ToString();
-        }
-
+        /// <summary>The hardpoint list as names, so an empty slot is visible as "empty" rather than "".</summary>
         /// <summary>
         /// Postfix on CASController.GetIdealAttackType: never hand the firing chain a type this sortie
         /// cannot actually fire.
@@ -482,8 +362,9 @@ namespace CustomFireSupport
             private static string DescribeAttackEntries(CASHardpointManager manager)
             {
                 List<CASAttackMeta> attacks = AttacksRef == null || manager == null ? null : AttacksRef(manager);
-                return "attack entries " + (attacks == null ? "(none)" : DescribeAttacks(attacks.ToArray()));
+                return "attack entries " + (attacks == null ? "(none)" : attacks.Count.ToString());
             }
         }
     }
 }
+

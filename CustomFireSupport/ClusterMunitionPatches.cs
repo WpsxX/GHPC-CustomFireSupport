@@ -204,11 +204,6 @@ namespace CustomFireSupport
                         carrier = __instance.gameObject.AddComponent<ClusterMunition>();
                     }
                     carrier.Arm(launch, aimPoint, __instance.ID);
-
-                    Log.Verbose("cluster munition: '" + carrier.ShellName + "' round #" + __instance.ID +
-                                " armed towards " + carrier.AimPoint.ToString("0.#") + " - it will open at " +
-                                carrier.BurstPoint.ToString("0.#") + " (" + carrier.BurstHeight.ToString("0") +
-                                " m above the call), " + carrier.Submunitions + " x " + carrier.SubmunitionName + ".");
                 }
                 catch (Exception ex)
                 {
@@ -358,3 +353,4 @@ namespace CustomFireSupport
         }
     }
 }
+

@@ -32,24 +32,7 @@
     <DebugType>none</DebugType>
     <Optimize>true</Optimize>
     <OutputPath>bin\Release\</OutputPath>
-    <!--
-      LOGGING SWITCH (see Log.cs).
-
-      Release ships WITHOUT logging. Log.Info/Warn/Error/Verbose carry [Conditional("CAS_LOG")], so
-      when CAS_LOG is undefined the compiler deletes every call statement together with the string
-      literals that feed it - the source keeps its comments and call sites, the binary does not keep
-      the text.
-
-      Measured on this project: 321024 -> 258560 bytes (-19.5%): 179 call sites and 622 string
-      literals gone. The material-recipe strings that the runtime actually needs are untouched
-      (verified: all 17 survive).
-
-      To produce a DIAGNOSTIC build that logs - what you want when investigating a reported
-      problem - add CAS_LOG here, or build with:
-
-          dotnet msbuild CustomFireSupport.csproj /p:Configuration=Release ^
-                            "/p:DefineConstants=TRACE%3BCAS_LOG"
-    -->
+    <!-- Routine Info/Verbose logging is compile-time stripped from Release builds. -->
     <DefineConstants>TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
@@ -137,6 +120,9 @@
     <Compile Include="CasNativeMaterialRecipe.cs" />
     <Compile Include="CasMissileVisualRepair.cs" />
     <Compile Include="CasMissileMotorBurnout.cs" />
+    <Compile Include="CasMissileGuidance.cs" />
+    <Compile Include="CasMissileAttackRun.cs" />
+    <Compile Include="CasLaserRunHold.cs" />
     <Compile Include="FactionShellCatalog.cs" />
     <Compile Include="FactionBatteryProfiles.cs" />
     <Compile Include="CasDonorProvider.cs" />
