@@ -190,13 +190,6 @@ namespace CustomFireSupport
             }
         }
 
-        private static string DescribeClips()
-        {
-            List<string> names = new List<string>(_clips.Keys);
-            names.Sort(StringComparer.Ordinal);
-            return string.Join(", ", names.ToArray());
-        }
-
         /// <summary>True once at least one clip is usable, i.e. the custom sound should be used.</summary>
         internal static bool IsAvailable
         {

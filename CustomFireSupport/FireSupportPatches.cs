@@ -10,7 +10,6 @@ using GHPC.PhysicsHelpers;
 using GHPC.UI;
 using GHPC.UI.Map;
 using GHPC.Vehicle;
-//using GHPC.Weaponry;
 using GHPC.Weaponry.CAS;
 using GHPC.Weaponry.Interfaces;
 using GHPC.Weapons;
@@ -794,7 +793,7 @@ namespace CustomFireSupport
         /// by the deviation anyway, and a bomb needs an exact release so its terminal correction stays
         /// small. The value is restored right after the Fire() call.
         ///
-        /// Missiles are still flown by the game's own guidance, so for them the knob keeps its historical
+        /// Missiles use their own guidance component, so for them the knob keeps its historical
         /// meaning here: a multiplier of the hardpoint's own launch deviation (1 = natural, 0.5 = half,
         /// 0 = none).
         ///
@@ -813,15 +812,6 @@ namespace CustomFireSupport
                 internal float Original;
             }
 
-            /// <summary>
-            /// True when the hardpoint belongs to an aircraft this mod summoned. Delegates to
-            /// CasPayloadFactory so every patch shares exactly one definition.
-            /// </summary>
-            private static bool IsOurSortie(CASHardpoint hardpoint)
-            {
-                return CasPayloadFactory.IsOurSortie(hardpoint);
-            }
-
             private static void Prefix(CASHardpoint __instance, out DeviationState __state)
             {
                 __state = default(DeviationState);
@@ -837,16 +827,12 @@ namespace CustomFireSupport
                     // hardpoints that have no belt.
                     CasPayloadFactory.AdvanceBelt(__instance);
 
-                    bool runtime = CasPayloadFactory.IsRuntimeHardpoint(__instance);
-                    bool marker = __instance.GetComponentInParent<CustomCasMarker>() != null;
-                    bool ours = runtime || IsOurSortie(__instance);
+                    bool ours = CasPayloadFactory.IsRuntimeHardpoint(__instance) ||
+                                CasPayloadFactory.IsOurSortie(__instance);
                     if (!ours)
                     {
-                        LogFireOnce(__instance, "vanilla hardpoint (left untouched)", runtime, marker);
                         return; // vanilla / enemy CAS: leave the game's own values alone.
                     }
-
-                    float accuracy = CasPayloadFactory.SlotAccuracy(__instance);
 
                     // The mod flies these rounds itself - the impact point is drawn in
                     // CasImpactPointPatch and the round is taken there by CasImpactAimPatch - so the
@@ -857,42 +843,24 @@ namespace CustomFireSupport
                         __state.Original = DeviationRef(__instance);
                         __state.Scaled = true;
                         DeviationRef(__instance) = 0f;
-                        LogFireOnce(__instance, "impact resolver owns the trajectory (CasAccuracy " +
-                                                CasPayloadFactory.AccuracyRadius(accuracy).ToString("0.##") +
-                                                " m circle, release deviation " +
-                                                __state.Original.ToString("0.###") + " -> 0)", runtime, marker);
                         return;
                     }
 
+                    float accuracy = CasPayloadFactory.SlotAccuracy(__instance);
                     if (Mathf.Approximately(accuracy, 1f))
                     {
-                        LogFireOnce(__instance, "natural spread kept", runtime, marker);
                         return; // natural spread.
                     }
 
                     __state.Original = DeviationRef(__instance);
                     __state.Scaled = true;
                     DeviationRef(__instance) = CustomSlotBuilder.ScaleValue(__state.Original, accuracy);
-                    LogFireOnce(__instance, "deviation " + __state.Original.ToString("0.###") + " -> " +
-                                             DeviationRef(__instance).ToString("0.###") + " (scale " +
-                                             accuracy.ToString("0.###") + ")", runtime, marker);
                 }
                 catch (Exception ex)
                 {
                     Log.Error("CAS accuracy patch failed: " + ex);
                 }
             }
-
-            /// <summary>One line per hardpoint instance: proves what the fire-time patch actually did.</summary>
-            private static void LogFireOnce(CASHardpoint hardpoint, string detail, bool runtime, bool marker)
-            {
-                if (hardpoint == null || !_logged.Add(hardpoint.GetInstanceID()))
-                {
-                    return;
-                }
-            }
-
-            private static readonly HashSet<int> _logged = new HashSet<int>();
 
             private static void Postfix(CASHardpoint __instance, DeviationState __state)
             {
@@ -1464,6 +1432,12 @@ namespace CustomFireSupport
             private static readonly AccessTools.FieldRef<LiveRound, MotionState> MotionRef =
                 AccessTools.FieldRefAccess<LiveRound, MotionState>("_currentMotionState");
 
+            /// <summary>
+            /// The guidance rotation before LiveRound overwrites it with the ballistic step direction.
+            /// </summary>
+            private static readonly Dictionary<int, Quaternion> GuidedRotations =
+                new Dictionary<int, Quaternion>();
+
             /// <summary>Within this distance of the point the mod stops steering and the game takes over.</summary>
             private const float HandoverDistance = 4f;
 
@@ -1483,7 +1457,7 @@ namespace CustomFireSupport
             /// </summary>
             private const float MaxCorrectionAcceleration = 25f;
 
-            private static void Prefix(LiveRound __instance)
+            private static void Prefix(LiveRound __instance, ref float dt)
             {
                 try
                 {
@@ -1517,7 +1491,15 @@ namespace CustomFireSupport
                     // air-to-ground missile, and it owns everything about the shape of that flight: the arch,
                     // the pop-up, the terminal dive, the laser beam and the fail states. A round without it
                     // (bullets, rockets, bombs) is flown by the shared resolver below.
-                    CasMissileGuidance guidance = __instance.GetComponent<CasMissileGuidance>();
+                    CasMissileGuidance guidance = CasPayloadFactory.IsOurMissile(__instance.Info)
+                        ? __instance.GetComponent<CasMissileGuidance>() : null;
+                    float rawDt = dt;
+                    if (guidance != null)
+                    {
+                        // The batch handler supplies an uncapped frame delta after a hitch or pause.
+                        // Guidance and the game's ballistic movement must advance by the same step.
+                        dt = Mathf.Min(dt, 1f / 30f);
+                    }
 
                     Vector3 point = Vector3.zero;
                     bool havePoint = CasPayloadFactory.TryGetImpactPoint(aim, out point);
@@ -1531,7 +1513,7 @@ namespace CustomFireSupport
 
                     if (guidance == null && aim.GravityAware)
                     {
-                        CorrectFallingRound(__instance, aim, position, point);
+                        CorrectFallingRound(__instance, position, point);
                         return;
                     }
 
@@ -1542,7 +1524,7 @@ namespace CustomFireSupport
                         // lost laser round is rolling as it tumbles, which a plain `forward =` would erase).
                         // False means it is done with the round - the impact point is reached - and the game
                         // takes the last couple of metres.
-                        if (!guidance.TryStep(havePoint, point, Mathf.Min(Time.deltaTime, 0.05f), out direction))
+                        if (!guidance.TryStep(havePoint, point, dt, rawDt, out direction))
                         {
                             aim.Released = true;
                             return;
@@ -1585,19 +1567,59 @@ namespace CustomFireSupport
                         // Fix the basis at the speed it really arrives with.
                         __instance.MaxSpeed = pinned;
                     }
-                    if (pinned > 0f && !aim.SpeedLogged)
-                    {
-                        aim.SpeedLogged = true;
-                    }
-
                     MotionState state = MotionRef(__instance);
                     state.position = position;
                     state.velocity = direction * speed;
                     MotionRef(__instance) = state;
+
+                    // Remember the attitude the guidance chose for this frame. LiveRound's own update
+                    // replaces the round's rotation with its ballistic displacement direction, so the
+                    // postfix puts the guided attitude - roll included - back.
+                    if (guidance != null)
+                    {
+                        GuidedRotations[__instance.GetInstanceID()] = guidance.IntendedRotation;
+                    }
                 }
                 catch (Exception ex)
                 {
                     Log.Error("CAS impact steering failed: " + ex);
+                }
+            }
+
+            /// <summary>
+            /// LiveRound replaces the guided missile's rotation with its ballistic displacement direction.
+            /// Restore the complete guidance rotation, including roll, after that update. Checking for a
+            /// zero transform.forward cannot detect this: Unity returns a unit vector even after assigning
+            /// a zero direction to Transform.forward.
+            /// </summary>
+            private static void Postfix(LiveRound __instance)
+            {
+                int id = __instance.GetInstanceID();
+                Quaternion guidedRotation;
+                bool guidedThisFrame = GuidedRotations.TryGetValue(id, out guidedRotation);
+                GuidedRotations.Remove(id);
+
+                try
+                {
+                    if (!guidedThisFrame || __instance.Pooled)
+                    {
+                        return;
+                    }
+                    CasImpactAim aim = __instance.GetComponent<CasImpactAim>();
+                    if (aim == null || aim.Released || aim.ShotId != __instance.ID)
+                    {
+                        return;
+                    }
+                    CasMissileGuidance guidance = __instance.GetComponent<CasMissileGuidance>();
+                    if (guidance == null)
+                    {
+                        return;
+                    }
+                    __instance.transform.rotation = guidedRotation;
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("CAS missile rotation restore failed: " + ex);
                 }
             }
 
@@ -1616,7 +1638,7 @@ namespace CustomFireSupport
             /// real state, so model error (drag on the correction itself, a moving target) is corrected
             /// on the next frame instead of accumulating.
             /// </summary>
-            private static void CorrectFallingRound(LiveRound round, CasImpactAim aim, Vector3 position, Vector3 point)
+            private static void CorrectFallingRound(LiveRound round, Vector3 position, Vector3 point)
             {
                 MotionState state = MotionRef(round);
                 state.position = position; // predict from where the round really is
@@ -1681,10 +1703,6 @@ namespace CustomFireSupport
                     state.velocity.z + correction.z);
                 MotionRef(round) = state;
 
-                if (!aim.CorrectionLogged)
-                {
-                    aim.CorrectionLogged = true;
-                }
             }
 
             /// <summary>One step of the round's own flight model, exactly as LiveRound integrates it.</summary>
@@ -1751,8 +1769,6 @@ namespace CustomFireSupport
                     stale.Offset = Vector3.zero;
                     stale.ShotId = 0;
                     stale.GravityAware = false;
-                    stale.CorrectionLogged = false;
-                    stale.SpeedLogged = false;
                 }
                 catch (Exception ex)
                 {
@@ -1833,8 +1849,6 @@ namespace CustomFireSupport
                     aim.Offset = offset;
                     aim.ShotId = __instance.ID;
                     aim.GravityAware = gravityAware;
-                    aim.CorrectionLogged = false;
-                    aim.SpeedLogged = false;
                     aim.Released = false;
 
                     // Keep the target transform on the round.  CasMissileGuidance samples it every

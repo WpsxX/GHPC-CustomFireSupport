@@ -1659,31 +1659,6 @@ namespace CustomFireSupport
             return neutralOnMySide;
         }
 
-        private static List<CasTemplate> CollectDrawPool(List<CasTemplate> scored, Faction faction,
-            bool skipGunRunAirframes, bool everything = false)
-        {
-            List<CasTemplate> pool = new List<CasTemplate>();
-            for (int i = 0; i < scored.Count; i++)
-            {
-                CasTemplate candidate = scored[i];
-                if (!everything && candidate.Faction != faction)
-                {
-                    continue;
-                }
-                if (skipGunRunAirframes && CasAirframeCatalog.IsGunRunAirframe(candidate.Name) &&
-                    !CasAirframeCatalog.IsApprovedPair(candidate.Name, candidate.LoadoutName))
-                {
-                    continue; // gun-run aircraft, unless the pair was explicitly approved for this slot
-                }
-                if (!CasAirframeCatalog.LoadoutFitsSide(candidate.Name, candidate.LoadoutName))
-                {
-                    continue; // e.g. an F-4 carrying a Soviet rocket pod: the pod is another side's
-                }
-                pool.Add(candidate);
-            }
-            return pool;
-        }
-
         private static string DescribeDrawPool(List<CasTemplate> pool)
         {
             StringBuilder builder = new StringBuilder();

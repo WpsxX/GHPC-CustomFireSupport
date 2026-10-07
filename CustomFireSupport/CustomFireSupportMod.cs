@@ -1,6 +1,5 @@
 using System;
 using MelonLoader;
-//using UnityEngine;
 
 [assembly: MelonInfo(typeof(CustomFireSupport.CustomFireSupportMod), "CustomFireSupport", "1.0.4", "WpsxX")]
 [assembly: MelonGame("Radian Simulations LLC", "GHPC")]
@@ -65,8 +64,8 @@ namespace CustomFireSupport
             try
             {
                 FireSupportPatches.CasTargetSpreadPatch.Tick();
-                    CasMissileAttackRun.Tick();
-CustomSupportRegistry.Tick();
+                CasMissileAttackRun.Tick();
+                CustomSupportRegistry.Tick();
             }
             catch (Exception ex)
             {

@@ -517,16 +517,21 @@ namespace CustomFireSupport
             /// The AGM-65's "饱满的抛物拱桥" is a moderate arch; the Kh-25's "山坡 (Gorka)" is a higher
             /// pop-up that keeps the round clear of the dust its own laser has to see through, and it is
             /// what makes its final dive so steep (it is still high when the target is close).
+            ///
+            /// THE FIGURE IS SCALED TO THE GAME'S ENGAGEMENT RANGE, not to the real weapon's 20 km one. See
+            /// TerminalRangeMeters for the measurement that sets it: a loft sized for a 20 km shot puts
+            /// 140-270 m of climb under a 2-4 km one, which is where the "strange angles" came from.
             /// </summary>
             internal float LoftHeightMeters = 110f;
 
             /// <summary>
-            /// The flight-path angle the round is allowed to arrive at, in degrees below the horizontal,
-            /// applied inside <see cref="TerminalRangeMeters"/>: the descent is capped to no steeper than
-            /// this, so the round settles onto the target from slightly above instead of snapping down.
+            /// The flight-path angle the round arrives at, in degrees below the horizontal. The guidance
+            /// uses it as a FLOOR under the desired angle (never shallower than the cone, which is the hard
+            /// "still able to dive onto it" limit), so the round settles onto the target at this angle
+            /// instead of gliding in shallower as the cone relaxes with range.
             ///
-            /// The AGM-65's "平稳向下压头，约30度斜俯角" is this number. The Kh-25 sets it high enough not
-            /// to bind: it is MEANT to arrive as steeply as the geometry allows, which the loft decides.
+            /// The AGM-65's "平稳向下压头，约30度斜俯角" is this number. The Kh-25 sets it high: "以近乎
+            /// 笔直的角度强行把机头硬掰朝向激光反射点" is a near-vertical slam.
             /// </summary>
             internal float TerminalDiveDegrees = 30f;
 
@@ -534,6 +539,13 @@ namespace CustomFireSupport
             /// The range from the target, in metres, at which the loft is given up and the round aims
             /// straight at the impact point. Zero loft this far out is what turns the arch into a dive;
             /// a longer terminal range starts the push-over earlier and harder.
+            ///
+            /// SCALED TO THE GAME'S RANGES. The taper is also the flight path angle the loft commands while
+            /// it is saturated - atan2(LoftHeight, range) - so it is what decides how steeply the round
+            /// climbs and how much of the flight it spends descending. Sized for a real 20 km missile (a
+            /// 1.2 km taper under a 140 m arch) a 2.2 km shot gained 143-153 m and then arrived at -40 deg;
+            /// at the game's distances the same shot wants roughly a 0.7 ratio of taper to release range, so
+            /// the arch is under 100 m, the climb is gentle and the dive is the profile's own angle.
             /// </summary>
             internal float TerminalRangeMeters = 900f;
 
@@ -632,11 +644,17 @@ namespace CustomFireSupport
         /// from the charge - inheriting the donor Mk-82 would have left the HEAT jet at a general-purpose
         /// bomb's 90 mm. For reference, GHPC's own ATGMs run 400 mm (9M111) to 630 mm (I-TOW).
         ///
-        /// FLIGHT: the "饱满的抛物拱桥" - a hard pull-up to 20 degrees while the motor burns, a moderate
-        /// arch (the round aims 110 m above the sight line and sinks back onto it), a gentle glide once the
-        /// smoke stops, and a push-over to about 30 degrees. Everything about it is rate-limited and
+        /// FLIGHT: the "饱满的抛物拱桥" - a pull-up to 18 degrees while the motor burns, a moderate arch
+        /// (the round aims 90 m above the sight line and sinks back onto it), a gentle glide once the
+        /// smoke stops, and an arrival at about 30 degrees. Everything about it is rate-limited and
         /// fire-and-forget: the aircraft is free the moment it leaves the rail, and a lost target leaves it
         /// falling on its last tangent instead of tumbling.
+        ///
+        /// The loft and the taper are SCALED to the range the game is played at (see the two fields'
+        /// remarks): measured over 1.5-4.0 km releases at 250-800 m, the shipped 140 m / 1200 m put
+        /// 143-161 m of climb under a 2.2-2.6 km shot and arrived at -40 deg; the figures below peak at
+        /// 100 m and arrive at the profile's own 30-40 deg, with the same guaranteed hit (worst miss
+        /// 0.8 m across the envelope, measured in _mountcheck/cfs_missile_candidates.py).
         /// </summary>
         internal static readonly MissileProfile NatoMissile = new MissileProfile
         {
@@ -656,9 +674,9 @@ namespace CustomFireSupport
             Guidance = GuidanceKind.FireAndForget,
             MotorBurnSeconds = 5f,
             BoostClimbDegrees = 18f,
-            LoftHeightMeters = 140f,
+            LoftHeightMeters = 90f,
             TerminalDiveDegrees = 30f,
-            TerminalRangeMeters = 1200f,
+            TerminalRangeMeters = 800f,
             // "迅速抬高机头" at full thrust, then "像一条被拉弯的钢丝" for the rest of the flight.
             BoostTurnRateDegreesPerSecond = 45f,
             CruiseTurnRateDegreesPerSecond = 12f,
@@ -692,6 +710,12 @@ namespace CustomFireSupport
         /// The laser is the whole weapon: the carrier has to hold its run with the nose within 35 degrees
         /// of the spot until the round lands (CasLaserRunHold keeps the AI aircraft on that run and reports
         /// it in the log), and a beam that breaks takes the round's control with it.
+        ///
+        /// Its loft and taper are scaled to the game's ranges on the same basis as the AGM's (260 m / 600 m
+        /// became 160 m / 700 m): the pop-up still happens and is still visibly higher than the AGM's, but
+        /// it no longer puts 218-270 m of climb under a 1.8-2.6 km shot, and the arrival angle comes down
+        /// from -73 deg average to about -46 deg - still the near-vertical slam of the brief, without the
+        /// round running out of geometry before it gets there.
         /// </summary>
         internal static readonly MissileProfile PactMissile = new MissileProfile
         {
@@ -708,11 +732,11 @@ namespace CustomFireSupport
             MotorBurnSeconds = 5f,
             // A lower pull-up than the AGM, but held longer and with a much higher loft under it.
             BoostClimbDegrees = 12f,
-            LoftHeightMeters = 260f,
-            // Deliberately high enough not to bind: the dive is as steep as the geometry allows, and the
-            // loft is what makes that steep.
+            LoftHeightMeters = 160f,
+            // High enough not to bind: the dive is as steep as the geometry allows, and the loft is what
+            // makes that steep.
             TerminalDiveDegrees = 80f,
-            TerminalRangeMeters = 600f,
+            TerminalRangeMeters = 700f,
             BoostTurnRateDegreesPerSecond = 60f,
             CruiseTurnRateDegreesPerSecond = 18f,
             // "鸭翼剧烈偏转，以近乎笔直的角度强行把机头硬掰朝向激光反射点".

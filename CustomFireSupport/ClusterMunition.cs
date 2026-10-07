@@ -186,9 +186,6 @@ namespace CustomFireSupport
             {
                 SpawnSubmunition(carrier, burstPoint, i);
             }
-            if (false)
-            {
-            }
         }
 
         /// <summary>
@@ -449,7 +446,6 @@ namespace CustomFireSupport
             }
 
             Vector3 origin = round.transform.position;
-            int thrown = 0;
             for (int i = 0; i < ClusterMunitionFactory.HedpFragmentCount; i++)
             {
                 LiveRound fragment;
@@ -493,11 +489,6 @@ namespace CustomFireSupport
                 // AFTER Init - see the class comment.
                 fragment.RhaPenetrationOverride = UnityEngine.Random.Range(
                     ClusterMunitionFactory.HedpMinSpallRha, ClusterMunitionFactory.HedpMaxSpallRha);
-                thrown++;
-            }
-
-            if (false && thrown > 0)
-            {
             }
         }
 

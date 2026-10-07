@@ -121,6 +121,7 @@
     <Compile Include="CasMissileVisualRepair.cs" />
     <Compile Include="CasMissileMotorBurnout.cs" />
     <Compile Include="CasMissileGuidance.cs" />
+    <Compile Include="CasMissilePauseHold.cs" />
     <Compile Include="CasMissileAttackRun.cs" />
     <Compile Include="CasLaserRunHold.cs" />
     <Compile Include="FactionShellCatalog.cs" />

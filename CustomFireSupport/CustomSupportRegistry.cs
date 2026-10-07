@@ -1,7 +1,5 @@
 using System;
-//using System.Collections;
 using System.Collections.Generic;
-using System.Reflection;
 using GHPC;
 using GHPC.Event;
 using GHPC.Player;
@@ -542,27 +540,6 @@ namespace CustomFireSupport
                 builder.Append(char.IsLetterOrDigit(c) ? c : '_');
             }
             return builder.ToString();
-        }
-
-        /// <summary>Reads a TMP text field without referencing TMPro.</summary>
-        private static string ReadText(object component, string fieldName)
-        {
-            try
-            {
-                FieldInfo field = AccessTools.Field(component.GetType(), fieldName);
-                object text = field == null ? null : field.GetValue(component);
-                if (text == null)
-                {
-                    return "(none)";
-                }
-                PropertyInfo property = text.GetType().GetProperty("text");
-                object value = property == null ? null : property.GetValue(text);
-                return value == null ? "(empty)" : value.ToString();
-            }
-            catch (Exception)
-            {
-                return "(?)";
-            }
         }
 
         private static Sprite LookupIcon(MapFireSupportPanel panel, MapControlFlag flag)

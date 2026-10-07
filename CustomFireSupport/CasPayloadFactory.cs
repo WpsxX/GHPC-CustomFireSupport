@@ -4,7 +4,6 @@ using System.Reflection;
 using FMOD.Studio;
 using FMODUnity;
 using GHPC;
-//using GHPC.Audio;
 using GHPC.Vehicle;
 using GHPC.Weaponry;
 using GHPC.Weaponry.CAS;
@@ -1959,12 +1958,6 @@ namespace CustomFireSupport
         /// instead of flying the round in a straight line to the point.
         /// </summary>
         internal bool GravityAware;
-
-        /// <summary>One diagnostic line per round, the first time the terminal correction engages.</summary>
-        internal bool CorrectionLogged;
-
-        /// <summary>One diagnostic line per round: the speed an air-to-ground missile is pinned to.</summary>
-        internal bool SpeedLogged;
 
         /// <summary>Set once the round is close enough / past the point: vanilla flight resumes.</summary>
         internal bool Released;

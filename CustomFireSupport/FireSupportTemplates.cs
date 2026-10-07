@@ -415,44 +415,8 @@ namespace CustomFireSupport
                 }
             }
 
-            if (false && best != null)
-            {
-                // Both sides are listed: this is how the faction specific shell names a mission happens to
-                // have loaded are identified, whichever side the player is on.
-            }
             return best;
         }
-
-        /// <summary>
-        /// Verbose candidate list for the smoke / illumination pick: every bundled prefab that scores
-        /// above zero, best first, with its score and whether it was the one chosen. This is what identifies
-        /// the faction specific shells on offer (GHPC names its ammunition after the gun that fires it,
-        /// e.g. "M110A1 Smoke Artillery" / "2S3 Smoke").
-        /// </summary>
-        private static string DescribeEffectCandidates(bool illumination, Faction faction, GameObject chosen)
-        {
-            List<GameObject> prefabs = CasPrewarmer.BundlePrefabs;
-            List<string> lines = new List<string>();
-            for (int i = 0; i < prefabs.Count; i++)
-            {
-                GameObject candidate = prefabs[i];
-                if (candidate == null)
-                {
-                    continue;
-                }
-                int score = ScoreEffectPrefab(candidate.name, illumination, faction);
-                if (score <= 0)
-                {
-                    continue;
-                }
-                lines.Add("'" + candidate.name + "' (score " + score +
-                          (ReferenceEquals(candidate, chosen) ? ", CHOSEN" : string.Empty) + ")");
-            }
-            lines.Sort();
-            return (illumination ? "illumination" : "smoke") + " candidates for " + faction + ": " +
-                   (lines.Count == 0 ? "(none in the bundle)" : string.Join("; ", lines.ToArray()));
-        }
-
         /// <summary>
         /// Faction fit of a candidate, delegated to <see cref="FactionShellCatalog"/> (kept in its own file so
         /// the unit tests can verify it without the game assemblies).
