@@ -711,8 +711,8 @@ namespace CustomFireSupport
         ///
         /// IT IS ONLY MOUNTED WHERE THE MODEL DOES NOT ALREADY SHOW ONE. GHPC bakes an AGM-65 into the
         /// A-10's model on each LAU-117 / LAU-118 rail as a permanently visible child, so mounting a second
-        /// body would leave the A-10 carrying missiles that never fire. The F-15 (a mod addition) has no
-        /// such child, which is exactly the case this exists for.
+        /// body would leave the A-10 carrying missiles that never fire. The check below is what tells the
+        /// two cases apart, for whichever airframe is flying the missile.
         ///
         /// Only the NATO missile has a body: GHPC ships no standalone Soviet air-to-ground missile mesh, so
         /// the Pact profile keeps the invisible mount it has always had.

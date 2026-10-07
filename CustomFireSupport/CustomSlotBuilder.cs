@@ -553,8 +553,8 @@ namespace CustomFireSupport
                     // hardpoint onto EVERY station, hanging a missile on each one while only the airframe's
                     // own stations can fire - and on the Su-25 that would also break the symmetric pair.
                     //
-                    // Which stations those are is per airframe: one for the A-10 / F-15 / MiG-23BN, and a
-                    // symmetric PAIR on the Su-25's eight under-wing stations. CASAttackMeta.Fire() walks the
+                    // Which stations those are is per airframe: a wing PAIR for the A-10 and the MiG-23BN, and
+                    // a symmetric PAIR on the Su-25's eight under-wing stations. CASAttackMeta.Fire() walks the
                     // included hardpoints one per trigger pull, and its TriggerPulls is set to the station
                     // count, so the Su-25 launches both missiles. Null entries leave the other stations empty
                     // (SetUpHardpoints skips a null prefab), which also keeps every other attack type
@@ -1008,8 +1008,9 @@ namespace CustomFireSupport
             bool wantsRockets = wanted != null && Array.IndexOf(wanted, AttackKind.Rockets) >= 0;
             bool wantsBombs = wanted != null && Array.IndexOf(wanted, AttackKind.Bombs) >= 0;
             // A GUN RUN is pinned to one designated aircraft per side (A-10 / MiG-23BN) and must not be
-            // re-drawn per call. A MISSILE slot is NOT pinned: on the Blue side both the A-10 and the F-15
-            // carry it, so it draws between them (see DrawMissileAirframe).
+            // re-drawn per call. A MISSILE slot is NOT pinned: a side may have more than one designated
+            // missile aircraft (Blue has only the A-10, Red has the MiG-23BN and the Su-25), so it draws
+            // between them (see DrawMissileAirframe).
             bool pinnedAirframe = wantsGunRun;
 
             List<CasTemplate> ordered = new List<CasTemplate>(candidates);
@@ -1171,9 +1172,9 @@ namespace CustomFireSupport
             bool wantsMissile)
         {
             // An air-to-ground missile slot draws between the side's DESIGNATED missile aircraft: the A-10
-            // and the F-15 on Blue, the MiG-23BN on Red. Nothing else may appear here - the missile is
+            // on Blue, the MiG-23BN and the Su-25 on Red. Nothing else may appear here - the missile is
             // synthesized at runtime, so CanDeliver() accepts every airframe, and the generic pools would
-            // otherwise hand a missile slot an F-4 or a MiG-21.
+            // otherwise hand a missile slot an F-4, an F-15 or a MiG-21.
             if (wantsMissile)
             {
                 CasTemplate missileAirframe = DrawMissileAirframe(scored, config, playerFaction);
@@ -1231,16 +1232,18 @@ namespace CustomFireSupport
         }
 
         /// <summary>
-        /// Draws one of the side's designated air-to-ground-missile aircraft: the A-10 or the F-15 for
-        /// Blue, the MiG-23BN for Red.
+        /// Draws one of the side's designated air-to-ground-missile aircraft: the A-10 for Blue, the
+        /// MiG-23BN or the Su-25 for Red.
         ///
         /// THE POOL IS DELIBERATELY NARROW. The missile is built at runtime by CasPayloadFactory, so
         /// CanDeliver(AirToGroundMissile) answers "yes" for EVERY airframe; drawing from the generic pools
-        /// would therefore let a missile slot send an F-4, a MiG-21 or anything else. Restricting the pool
-        /// to the designated aircraft is what keeps the missile on the airframe that is supposed to carry it.
+        /// would therefore let a missile slot send an F-4, an F-15, a MiG-21 or anything else. Restricting
+        /// the pool to the designated aircraft is what keeps the missile on the airframe that is supposed
+        /// to carry it.
         ///
-        /// The draw avoids the model this slot flew last, so the A-10 and the F-15 alternate instead of one
-        /// of them flying every sortie. Returns null when no designated airframe is available at all.
+        /// The draw avoids the model this slot flew last, so a side with more than one designated airframe
+        /// alternates between them instead of one flying every sortie. Returns null when no designated
+        /// airframe is available at all.
         /// </summary>
         private static CasTemplate DrawMissileAirframe(List<CasTemplate> scored, SlotConfig config,
             Faction playerFaction)

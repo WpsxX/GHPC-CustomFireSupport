@@ -71,17 +71,18 @@ namespace CustomFireSupport
                 TypicalAttacks = new[] { AttackKind.Rockets, AttackKind.Bombs }
             },
             // The F-15 is a mod addition: GHPC ships it only as scene objects, so it was extracted into a
-            // prefab (see CasF15Extract) and bundled. It flies bombs and the air-to-ground missile - not
-            // rockets - which is why Rockets is absent from its typical attacks.
+            // prefab (see CasF15Extract) and bundled. It flies BOMBS ONLY: rockets were never fitted for it,
+            // and the air-to-ground missile is not carried either - the A-10 is the side's only AGM airframe
+            // (see NatoMissileAirframes).
             new AirframeInfo
             {
                 Pattern = "f15", Side = AirframeSide.Nato, Flyover = FlyoverKind.SinglePass,
-                TypicalAttacks = new[] { AttackKind.Bombs, AttackKind.AirToGroundMissile }
+                TypicalAttacks = new[] { AttackKind.Bombs }
             },
             new AirframeInfo
             {
                 Pattern = "f-15", Side = AirframeSide.Nato, Flyover = FlyoverKind.SinglePass,
-                TypicalAttacks = new[] { AttackKind.Bombs, AttackKind.AirToGroundMissile }
+                TypicalAttacks = new[] { AttackKind.Bombs }
             },
 
             // ---- Red / Warsaw Pact ------------------------------------------
@@ -783,9 +784,10 @@ namespace CustomFireSupport
             return side == AirframeSide.Pact ? PactMissile : NatoMissile;
         }
 
-        // Blue: the A-10 carries the AGM-65 model on its pylons, and the F-15 (a mod addition, extracted
-        // from the game's terrain scenes) flies it too - the two share the NATO missile slot's draw.
-        private static readonly string[] NatoMissileAirframes = { "a-10", "a10", "f15", "f-15" };
+        // Blue: the A-10 is the side's ONLY air-to-ground-missile airframe. It carries the AGM-65 model on
+        // its own pylons, so it is the one aircraft the missile slot may draw. The F-15 was removed from
+        // this list on request: it stays a valid CAS airframe for bombs, it just no longer flies the ATGM.
+        private static readonly string[] NatoMissileAirframes = { "a-10", "a10" };
         // Red: the MiG-23BN, plus the Su-25 (the player's own model, reconstructed by CasSu25Build), which
         // carries the Kh-25 as a symmetric pair.
         private static readonly string[] PactMissileAirframes = { "mig-23bn", "mig23bn", "mig 23bn", "su25", "su-25" };
@@ -799,13 +801,6 @@ namespace CustomFireSupport
         /// station and index 5 the mirror on the right.
         /// </summary>
         private static readonly int[] Su25MissileStations = { 2, 5 };
-
-        /// <summary>
-        /// The F-15's AGM-65 pair. Its three attach points are left inboard (0), belly (1) and right inboard
-        /// (2) at x = -2.83 / +0.03 / +2.85, so stations 0 and 2 are the symmetric wing pair - the belly is
-        /// left empty because a single centreline missile is not a "pair".
-        /// </summary>
-        private static readonly int[] F15MissileStations = { 0, 2 };
 
         /// <summary>
         /// The A-10's AGM-65 pair. It has eleven attach points (H1..H11 at x = +6.03 down to -6.03) and its
@@ -825,8 +820,12 @@ namespace CustomFireSupport
         /// HardpointAttachPoints. The count is what decides how many missiles a sortie carries: the attack
         /// entry gets one trigger pull per station, so a two-station airframe launches two.
         ///
-        /// Every airframe that can fly the air-to-ground missile carries a PAIR now - the player asked for
+        /// Every airframe that can fly the air-to-ground missile carries a PAIR - the player asked for
         /// two rounds per sortie, not one. Only the wing pairs are used, never the centreline/belly.
+        ///
+        /// Only airframes this project actually designates may be reached here: IsMissileAirframe is checked
+        /// before a missile slot builds its loadout, so the fallback below is for an airframe that is not on
+        /// any list rather than for one that has a pair.
         /// </summary>
         internal static int[] MissileStationsFor(string airframeName)
         {
@@ -836,10 +835,6 @@ namespace CustomFireSupport
                 if (lower.Contains("su25") || lower.Contains("su-25"))
                 {
                     return Su25MissileStations;
-                }
-                if (lower.Contains("f15") || lower.Contains("f-15"))
-                {
-                    return F15MissileStations;
                 }
                 if (lower.Contains("a10") || lower.Contains("a-10"))
                 {
@@ -854,10 +849,9 @@ namespace CustomFireSupport
         }
 
         /// <summary>
-        /// True for the aircraft a missile slot may fly on the given side: the A-10 and the F-15 (Blue),
-        /// the MiG-23BN (Red). The AGM-65 model only exists on the A-10's pylons and the F-15 shares the
-        /// NATO pylon family; the MiG-23BN is the Pact's ground attack aircraft. A missile slot DRAWS
-        /// among these rather than being pinned to one, so the A-10 and the F-15 alternate.
+        /// True for the aircraft a missile slot may fly on the given side: the A-10 (Blue) and the MiG-23BN
+        /// plus the Su-25 (Red). A missile slot DRAWS among these rather than being pinned to one. The F-15
+        /// is deliberately NOT here - it flies bombs only.
         /// </summary>
         internal static bool IsMissileAirframe(string airframeName, AirframeSide side)
         {
