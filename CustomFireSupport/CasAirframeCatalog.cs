@@ -13,9 +13,6 @@ namespace CustomFireSupport
     ///   3. the default flyover profile when SlotN_CasFlyover is left empty,
     ///   4. recognising the designated strafing aircraft and rejecting cross-side loadout pairings
     ///      (IsGunRunAirframe / LoadoutFitsSide).
-    ///
-    /// The attack list is only a hint for logging: the attacks a slot may use always come from the
-    /// loadout asset the airframe actually carries (CASLoadout.Attacks).
     /// </summary>
     /// <summary>Which side the airframe belongs to. Kept free of the game's Faction enum so the
     /// catalog can be unit-tested without the game assemblies.</summary>
@@ -31,7 +28,6 @@ namespace CustomFireSupport
         internal string Pattern;
         internal AirframeSide Side;
         internal FlyoverKind Flyover;
-        internal AttackKind[] TypicalAttacks;
     }
 
     internal static class CasAirframeCatalog
@@ -42,74 +38,48 @@ namespace CustomFireSupport
             // ---- Blue / NATO ------------------------------------------------
             new AirframeInfo
             {
-                Pattern = "a10", Side = AirframeSide.Nato, Flyover = FlyoverKind.Linger,
-                TypicalAttacks = new[] { AttackKind.GunRun, AttackKind.Bombs, AttackKind.Rockets }
+                Pattern = "a10", Side = AirframeSide.Nato, Flyover = FlyoverKind.Linger
             },
             new AirframeInfo
             {
-                Pattern = "a-10", Side = AirframeSide.Nato, Flyover = FlyoverKind.Linger,
-                TypicalAttacks = new[] { AttackKind.GunRun, AttackKind.Bombs, AttackKind.Rockets }
+                Pattern = "a-10", Side = AirframeSide.Nato, Flyover = FlyoverKind.Linger
             },
             new AirframeInfo
             {
-                Pattern = "f4", Side = AirframeSide.Nato, Flyover = FlyoverKind.SinglePass,
-                TypicalAttacks = new[] { AttackKind.Bombs, AttackKind.Rockets }
+                Pattern = "f4", Side = AirframeSide.Nato, Flyover = FlyoverKind.SinglePass
             },
             new AirframeInfo
             {
-                Pattern = "f-4", Side = AirframeSide.Nato, Flyover = FlyoverKind.SinglePass,
-                TypicalAttacks = new[] { AttackKind.Bombs, AttackKind.Rockets }
+                Pattern = "f-4", Side = AirframeSide.Nato, Flyover = FlyoverKind.SinglePass
             },
             new AirframeInfo
             {
-                Pattern = "f104", Side = AirframeSide.Nato, Flyover = FlyoverKind.SinglePass,
-                TypicalAttacks = new[] { AttackKind.Rockets, AttackKind.Bombs }
+                Pattern = "f104", Side = AirframeSide.Nato, Flyover = FlyoverKind.SinglePass
             },
             new AirframeInfo
             {
-                Pattern = "f-104", Side = AirframeSide.Nato, Flyover = FlyoverKind.SinglePass,
-                TypicalAttacks = new[] { AttackKind.Rockets, AttackKind.Bombs }
+                Pattern = "f-104", Side = AirframeSide.Nato, Flyover = FlyoverKind.SinglePass
             },
-            // The F-15 is a mod addition: GHPC ships it only as scene objects, so it was extracted into a
-            // prefab (see CasF15Extract) and bundled. It flies BOMBS ONLY: rockets were never fitted for it,
-            // and the air-to-ground missile is not carried either - the A-10 is the side's only AGM airframe
-            // (see NatoMissileAirframes).
-            new AirframeInfo
-            {
-                Pattern = "f15", Side = AirframeSide.Nato, Flyover = FlyoverKind.SinglePass,
-                TypicalAttacks = new[] { AttackKind.Bombs }
-            },
-            new AirframeInfo
-            {
-                Pattern = "f-15", Side = AirframeSide.Nato, Flyover = FlyoverKind.SinglePass,
-                TypicalAttacks = new[] { AttackKind.Bombs }
-            },
-
             // ---- Red / Warsaw Pact ------------------------------------------
             new AirframeInfo
             {
-                Pattern = "mig", Side = AirframeSide.Pact, Flyover = FlyoverKind.SinglePass,
-                TypicalAttacks = new[] { AttackKind.Bombs, AttackKind.Rockets }
+                Pattern = "mig", Side = AirframeSide.Pact, Flyover = FlyoverKind.SinglePass
             },
             new AirframeInfo
             {
-                Pattern = "su22", Side = AirframeSide.Pact, Flyover = FlyoverKind.SinglePass,
-                TypicalAttacks = new[] { AttackKind.Bombs, AttackKind.Rockets }
+                Pattern = "su22", Side = AirframeSide.Pact, Flyover = FlyoverKind.SinglePass
             },
             new AirframeInfo
             {
-                Pattern = "su-22", Side = AirframeSide.Pact, Flyover = FlyoverKind.SinglePass,
-                TypicalAttacks = new[] { AttackKind.Bombs, AttackKind.Rockets }
+                Pattern = "su-22", Side = AirframeSide.Pact, Flyover = FlyoverKind.SinglePass
             },
             new AirframeInfo
             {
-                Pattern = "su25", Side = AirframeSide.Pact, Flyover = FlyoverKind.Linger,
-                TypicalAttacks = new[] { AttackKind.Rockets, AttackKind.Bombs, AttackKind.GunRun }
+                Pattern = "su25", Side = AirframeSide.Pact, Flyover = FlyoverKind.Linger
             },
             new AirframeInfo
             {
-                Pattern = "su-25", Side = AirframeSide.Pact, Flyover = FlyoverKind.Linger,
-                TypicalAttacks = new[] { AttackKind.Rockets, AttackKind.Bombs, AttackKind.GunRun }
+                Pattern = "su-25", Side = AirframeSide.Pact, Flyover = FlyoverKind.Linger
             },
         };
 
@@ -179,7 +149,6 @@ namespace CustomFireSupport
             "f104|f-104g mk82s only",
             "f4_lw|f4 2x triple mk82",
             "f4_usaf|f4 2x triple mk82",
-            "f15|f15 2x single mk82",
             "mig17|mig-17 rockets only",
             "mig21|mig-21 rockets only",
             "mig23bn|mig-23bn fab-250s only",
@@ -247,17 +216,6 @@ namespace CustomFireSupport
             // to keep the Su-25 in the Red rocket draw instead of being limited to bombs.
             "su25|su-25 rockets inner"
         };
-
-        /// <summary>
-        /// How many airframe+loadout pairs were explicitly approved (see
-        /// <see cref="ApprovedCrossLoadoutPairs"/>). Exposed so the test suite can assert the table is
-        /// populated rather than silently empty - an empty table would quietly drop the three rocket pairs
-        /// the approved list exists for.
-        /// </summary>
-        internal static int ApprovedPairCount
-        {
-            get { return ApprovedCrossLoadoutPairs.Length; }
-        }
 
         /// <summary>
         /// True when this airframe+loadout pair was explicitly approved above. Both names are matched
@@ -590,6 +548,100 @@ namespace CustomFireSupport
             /// </summary>
             internal float MaxLaunchOffAxisDegrees = 60f;
 
+            // ------------------------------------------------------------------
+            // AIR TARGETS (helicopters / fast movers)
+            //
+            // The player asked for the air-to-ground missile to be able to lock onto and attack a
+            // helicopter. The game's own per-target table already falls through to AirToGroundMissile for
+            // a Chopper (CASController.cs:1193-1210), and the round already tracks a moving target, so the
+            // weapon works - but only if the flight is flown differently, because an airborne target is
+            // not a ground target with a different position:
+            //
+            //   * every range that decides the hand-over is computed on the HORIZONTAL geometry in the
+            //     ground law, and a target the round is passing under has a horizontal range near zero, so
+            //     the round hands itself over while it is still hundreds of metres away (CasMissileGuidance
+            //     now uses the SLANT range for an air target);
+            //   * a crossing helicopter at 60-80 m/s moves hundreds of metres during a 3-6 second flight,
+            //     and one correction pass leaves most of that as lag (the lead is now iterated);
+            //   * the ground trajectory's whole shape - a pull-up into a 90-160 m arch, then a 30-80 degree
+            //     dive - aims the round at a point above a target that is already up there (an air target
+            //     is flown as a straight 3-D lead pursuit);
+            //   * the cruise turn rate that makes the AGM-65's approach look like "a bent wire" (12 deg/s)
+            //     cannot pull onto a crossing aircraft at all.
+            //
+            // NO FIELD ABOVE THIS LINE IS TOUCHED: these are additions, every one of them is read only
+            // under CasMissileGuidance's air-target flag or CasMissileAttackRun's air-target gate, and a
+            // ground engagement therefore takes exactly the code path (and the exactly the numbers) it
+            // took before.
+            // ------------------------------------------------------------------
+
+            /// <summary>
+            /// The widest angle between the aircraft's nose and an AIR target that still counts as a
+            /// launch, in degrees. Tighter than the ground limit on purpose: a lead pursuit against a
+            /// moving target needs the round to leave the rail already looking at where the target will
+            /// be, and the aircraft's own turn-in already points it at the target.
+            /// </summary>
+            internal float AirTargetMaxOffAxisDegrees = 35f;
+
+            /// <summary>
+            /// The closest the aircraft may release against an AIR target, in metres of slant range.
+            /// Deliberately much larger than the ground MinimumLaunchRangeMeters: a round that leaves the
+            /// rail with a helicopter almost underneath it has to turn through the whole crossing angle
+            /// inside its own minimum turning radius and cannot catch it (CasMissileAttackRun sends the
+            /// aircraft around instead).
+            /// </summary>
+            internal float AirTargetMinimumRangeMeters = 600f;
+
+            /// <summary>
+            /// The distance, in metres of SLANT range, at which the mod hands an air target's round back
+            /// to the game's own impact handling. It is a floor only: the live window is the larger of
+            /// this and one frame of flight, because a window smaller than one frame's travel is a window
+            /// the round steps straight over. Smaller than the ground figure because the frozen straight
+            /// line after hand-over has to intersect a target a few metres across that is still moving.
+            /// </summary>
+            internal float AirHandoverDistanceMeters = 6f;
+
+            /// <summary>
+            /// Inside this SLANT range an air-target round that has stopped closing the range counts as
+            /// past the target and is handed over. Smaller than the ground PassGuardDistance because a
+            /// crossing target's lead point genuinely opens the range for a frame or two while the round
+            /// is still turning onto it, and because the ground test's horizontal-only geometry - which
+            /// fired this guard the moment the round passed under an airborne target - is no longer used.
+            /// </summary>
+            internal float AirPassGuardDistanceMeters = 80f;
+
+            /// <summary>
+            /// Turn rate in degrees per second against an air target while the motor burns. Full
+            /// authority: this is the launch pull onto the lead point.
+            /// </summary>
+            internal float AirBoostTurnRateDegreesPerSecond = 45f;
+
+            /// <summary>
+            /// Turn rate in degrees per second against an air target once the motor is out. This is the
+            /// number that decides whether a crossing helicopter can be caught at all, and it is
+            /// deliberately far above the ground cruise rate ("a bent wire, no sudden jerks" - a wire
+            /// cannot follow a helicopter).
+            /// </summary>
+            internal float AirCruiseTurnRateDegreesPerSecond = 28f;
+
+            /// <summary>Turn rate in degrees per second against an air target in the terminal phase.</summary>
+            internal float AirTerminalTurnRateDegreesPerSecond = 45f;
+
+            /// <summary>
+            /// How many times the intercept lead is re-evaluated per frame against an air target. The
+            /// ground law's single correction pass is stable for a 10 m/s vehicle; a 60-80 m/s helicopter
+            /// needs the fixed point (and closes to it in two or three passes).
+            /// </summary>
+            internal int AirLeadIterations = 3;
+
+            /// <summary>
+            /// The largest speed, in m/s, an air target's per-frame displacement may imply before it is
+            /// clamped. The ground figure (120 m/s, hard-coded in CasMissileGuidance) already covers a
+            /// helicopter; it does not cover a fast mover, whose teleport-looking samples would otherwise
+            /// be thrown away as a jump.
+            /// </summary>
+            internal float AirTargetVelocityClampMeters = 200f;
+
             /// <summary>
             /// The widest angle, in degrees, the CARRIER's nose may be off the laser spot for a
             /// <see cref="GuidanceKind.LaserBeamRider"/> round to keep seeing it. Zero for a round that
@@ -629,9 +681,6 @@ namespace CustomFireSupport
             /// longer glide rather than a different flight (validated out to ~3.2 km in _mountcheck).
             /// </summary>
             internal float ReleaseDistanceMeters = 2000f;
-
-            /// <summary>The airframe this payload is pinned to, for the log.</summary>
-            internal string Airframe;
         }
 
         /// <summary>
@@ -662,7 +711,6 @@ namespace CustomFireSupport
             MissileId = "AGM-65 Maverick",
             PrefabHint = "agm-65",
             PylonBodyHint = "pylon agm65",
-            Airframe = "A-10",
             // Release as early as the guidance is good for: the A-10's Maverick is a stand-off shot, and the
             // player asked for the missile to leave the rail as soon as the run allows.
             ReleaseDistanceMeters = 2200f,
@@ -691,7 +739,19 @@ namespace CustomFireSupport
             // Lost seeker: no corrections left, nose falls away slowly, no spin, no wander.
             LostGuidancePitchDegreesPerSecond = 5f,
             LostGuidanceYawDegreesPerSecond = 0f,
-            LostGuidanceRollDegreesPerSecond = 0f
+            LostGuidanceRollDegreesPerSecond = 0f,
+            // ---- AIR TARGETS ONLY (helicopters): see the air block on MissileProfile. A Maverick is a
+            // guided, high-authority round, so its air numbers are the ground ones with the cruise rate
+            // and the lead raised and the trajectory flattened - nothing here is read for a ground target.
+            AirTargetMaxOffAxisDegrees = 35f,
+            AirTargetMinimumRangeMeters = 700f,
+            AirHandoverDistanceMeters = 6f,
+            AirPassGuardDistanceMeters = 80f,
+            AirBoostTurnRateDegreesPerSecond = 45f,
+            AirCruiseTurnRateDegreesPerSecond = 30f,
+            AirTerminalTurnRateDegreesPerSecond = 45f,
+            AirLeadIterations = 3,
+            AirTargetVelocityClampMeters = 200f
         };
 
         /// <summary>
@@ -723,7 +783,6 @@ namespace CustomFireSupport
             MissileId = "Kh-25",
             PrefabHint = "kh-25",
             PylonBodyHint = "pylon kh25",
-            Airframe = "MiG-23BN",
             CruiseSpeedMeters = 450f,
             Warhead = WarheadKind.HighExplosive,
             WarheadChargeKilograms = 90f,
@@ -753,7 +812,21 @@ namespace CustomFireSupport
             // Lost beam: control failure - the nose slams down and the round spins and wanders as it goes.
             LostGuidancePitchDegreesPerSecond = 140f,
             LostGuidanceYawDegreesPerSecond = 55f,
-            LostGuidanceRollDegreesPerSecond = 540f
+            LostGuidanceRollDegreesPerSecond = 540f,
+            // ---- AIR TARGETS ONLY (helicopters): see the air block on MissileProfile. The Kh-25 rides a
+            // beam, so an air shot also has to keep the carrier's run alive against a moving target - hence
+            // the longer minimum range (there is no point releasing inside the envelope of a run the
+            // aircraft cannot hold) and the sharper off-axis limit. Nothing here is read for a ground
+            // target, and no ground figure above is changed.
+            AirTargetMaxOffAxisDegrees = 30f,
+            AirTargetMinimumRangeMeters = 800f,
+            AirHandoverDistanceMeters = 6f,
+            AirPassGuardDistanceMeters = 90f,
+            AirBoostTurnRateDegreesPerSecond = 60f,
+            AirCruiseTurnRateDegreesPerSecond = 35f,
+            AirTerminalTurnRateDegreesPerSecond = 55f,
+            AirLeadIterations = 3,
+            AirTargetVelocityClampMeters = 200f
         };
 
         /// <summary>
@@ -784,9 +857,7 @@ namespace CustomFireSupport
             return side == AirframeSide.Pact ? PactMissile : NatoMissile;
         }
 
-        // Blue: the A-10 is the side's ONLY air-to-ground-missile airframe. It carries the AGM-65 model on
-        // its own pylons, so it is the one aircraft the missile slot may draw. The F-15 was removed from
-        // this list on request: it stays a valid CAS airframe for bombs, it just no longer flies the ATGM.
+        // Blue: the A-10 carries the AGM-65 model on its pylons.
         private static readonly string[] NatoMissileAirframes = { "a-10", "a10" };
         // Red: the MiG-23BN, plus the Su-25 (the player's own model, reconstructed by CasSu25Build), which
         // carries the Kh-25 as a symmetric pair.
@@ -850,8 +921,7 @@ namespace CustomFireSupport
 
         /// <summary>
         /// True for the aircraft a missile slot may fly on the given side: the A-10 (Blue) and the MiG-23BN
-        /// plus the Su-25 (Red). A missile slot DRAWS among these rather than being pinned to one. The F-15
-        /// is deliberately NOT here - it flies bombs only.
+        /// plus the Su-25 (Red). A missile slot DRAWS among these rather than being pinned to one.
         /// </summary>
         internal static bool IsMissileAirframe(string airframeName, AirframeSide side)
         {

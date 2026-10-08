@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using FMOD.Studio;
 using FMODUnity;
 using GHPC;
+using GHPC.Effects;
 using GHPC.Vehicle;
 using GHPC.Weaponry;
 using GHPC.Weaponry.CAS;
@@ -233,12 +235,10 @@ namespace CustomFireSupport
             //
             // The payload differs by airframe: one whose own model already shows an air-to-ground missile
             // (the A-10 bakes an AGM-65 onto each LAU rail) must keep the invisible mount, while an airframe
-            // that shows none (the F-15) gets a real body hung on the pylon. Caching on the profile and
-            // dispersion alone made the FIRST airframe to build it decide for all of them - so whichever of
-            // the two was drawn first, the other silently inherited its payload. In the reported run the
-            // A-10 was drawn first, its body-less hardpoint was cached, and the F-15 then flew with an empty
-            // pylon: 'muzzle attached (nothing shown on the pylon)' appears once, for the A-10, and the
-            // F-15's build was never even attempted.
+            // that shows none gets a real body hung on the pylon. Caching on the profile and dispersion
+            // alone made the FIRST airframe to build it decide for all of them, so whichever airframe was
+            // drawn first, the other silently inherited its payload: the A-10's body-less hardpoint was
+            // cached, and an airframe needing a mounted body then flew with an empty pylon.
             bool mountsBody = !HasBakedMissileBody(airframeName) && FindPylonBodyPrefab(profile) != null;
             string key = "AirToGroundMissile/" + profile.PrefabHint + "/disp" + accuracy.ToString("0.###") +
                          (mountsBody ? "/body" : "/bare");
@@ -689,9 +689,6 @@ namespace CustomFireSupport
                 MunitionCountRef(hardpoint) = 1;        // ignored while _visibleMunitions is true
                 SpawnPointRef(hardpoint) = muzzle.transform;
 
-                Debug.Log("[CAS payload factory] AirToGroundMissile on '" + airframeName +
-                          "' hangs a VISIBLE missile body on the pylon ('" + pylonBody.name +
-                          "'); it disappears when the missile is fired.");
             }
             else
             {
@@ -872,30 +869,34 @@ namespace CustomFireSupport
         /// 38 mm at 1000 m) normalised to 0 degrees: 138 mm / 76 mm. GHPC's AmmoType carries a single
         /// RhaPenetration with no range falloff, so the 500 m value is used.
         /// </summary>
-        private static AmmoCodexScriptable BuildPgu14(AmmoCodexScriptable donor)
+        private static AmmoCodexScriptable BuildPgu14(AmmoCodexScriptable donor, AmmoCodexScriptable decalDonor)
         {
-            return BuildRound(donor, "PGU-14/B API", AmmoType.AmmoCategory.Penetrator, AmmoType.AmmoShortName.Ap,
+            return BuildRound(donor, decalDonor, "PGU-14/B API", AmmoType.AmmoCategory.Penetrator,
+                AmmoType.AmmoShortName.Ap,
                 138f, 0.01f, 1010f, 0.425f, 0.09f, 0.000707f, 30f, 0.75f, 0.2f);
         }
 
         /// <summary>PGU-13/B HEI: 48 g HE filler, minimal penetration, no tracer.</summary>
-        private static AmmoCodexScriptable BuildPgu13(AmmoCodexScriptable donor)
+        private static AmmoCodexScriptable BuildPgu13(AmmoCodexScriptable donor, AmmoCodexScriptable decalDonor)
         {
-            return BuildRound(donor, "PGU-13/B HEI", AmmoType.AmmoCategory.Explosive, AmmoType.AmmoShortName.He,
+            return BuildRound(donor, decalDonor, "PGU-13/B HEI", AmmoType.AmmoCategory.Explosive,
+                AmmoType.AmmoShortName.He,
                 10f, 0.048f, 1010f, 0.36f, 0.10f, 0.000707f, 30f, 1f, 0.6f);
         }
 
         /// <summary>OFZ-30 HEI: the Su-22 gun-pod high-explosive incendiary round.</summary>
-        private static AmmoCodexScriptable BuildOfz30(AmmoCodexScriptable donor)
+        private static AmmoCodexScriptable BuildOfz30(AmmoCodexScriptable donor, AmmoCodexScriptable decalDonor)
         {
-            return BuildRound(donor, "OFZ-30 HEI", AmmoType.AmmoCategory.Explosive, AmmoType.AmmoShortName.He,
+            return BuildRound(donor, decalDonor, "OFZ-30 HEI", AmmoType.AmmoCategory.Explosive,
+                AmmoType.AmmoShortName.He,
                 12f, 0.048f, 940f, 0.39f, 0.10f, 0.000707f, 30f, 1f, 0.6f);
         }
 
         /// <summary>BR-30 AP: the Su-22 gun-pod armour-piercing fragmentation round (better than the game's 30mm AP).</summary>
-        private static AmmoCodexScriptable BuildBr30(AmmoCodexScriptable donor)
+        private static AmmoCodexScriptable BuildBr30(AmmoCodexScriptable donor, AmmoCodexScriptable decalDonor)
         {
-            return BuildRound(donor, "BR-30 AP", AmmoType.AmmoCategory.Penetrator, AmmoType.AmmoShortName.Ap,
+            return BuildRound(donor, decalDonor, "BR-30 AP", AmmoType.AmmoCategory.Penetrator,
+                AmmoType.AmmoShortName.Ap,
                 80f, 0.008f, 940f, 0.4f, 0.09f, 0.000707f, 30f, 0.75f, 0.2f);
         }
 
@@ -904,7 +905,8 @@ namespace CustomFireSupport
         /// effects / audio) and overwriting every ballistic field. The clone is kept alive by the belt
         /// that references it.
         /// </summary>
-        private static AmmoCodexScriptable BuildRound(AmmoCodexScriptable donor, string name,
+        private static AmmoCodexScriptable BuildRound(AmmoCodexScriptable donor, AmmoCodexScriptable decalDonor,
+            string name,
             AmmoType.AmmoCategory category, AmmoType.AmmoShortName shortName,
             float rhaPenetration, float tntKg, float muzzleVelocity, float mass, float coeff,
             float sectionalArea, float caliber, float spallMultiplier, float microFrag)
@@ -932,9 +934,13 @@ namespace CustomFireSupport
             ammo.MaximumRange = 4000f;
             ammo.Guidance = AmmoType.GuidanceType.Unguided;
             ammo.Flight = AmmoType.FlightPattern.Direct;
+            ApplyGunDecal(ammo, decalDonor != null ? decalDonor.AmmoType : null);
             // CachedIndex is deliberately left at the donor's value: the impact effect / decal caches
             // are keyed by it, so the clone reuses the donor's effects (the hit effects are copied).
             // A donor that had no cache yet (-1) makes the clone register lazily from its descriptor.
+            // (For the DECAL itself none of that matters: the mod's own ammo is answered by
+            // CasImpactCacheRepair, which resolves the decal from the descriptor above and never
+            // indexes the game's table - so the descriptor, not the index, is what makes the crater.)
 
             AmmoCodexScriptable codex = ScriptableObject.CreateInstance<AmmoCodexScriptable>();
             codex.name = name;
@@ -948,6 +954,225 @@ namespace CustomFireSupport
         {
             return _ourRounds.Contains(ammo);
         }
+
+        /// <summary>
+        /// The ground mark of ONE gun-run round, and the only decal change this factory makes.
+        ///
+        /// WHY IT IS NEEDED. A terrain hit always arrives as SurfaceMaterial.Dirt
+        /// (LiveRound.cs:296), and ImpactDecalsManager.CreateImpactDecalOfType refuses a Dirt decal
+        /// outright for EffectSize.Bullet and EffectSize.Autocannon (ImpactDecalsManager.cs:410-417).
+        /// These rounds are 30 mm autocannon clones, so with the donor's descriptor they leave nothing -
+        /// which is exactly what vanilla strafing does, and what the player asked to change FOR THE MOD'S
+        /// OWN ROUNDS ONLY (the donor's ammo object is never touched).
+        ///
+        /// WHAT IS COPIED. The HE donor's own decal descriptor - the same round the explosion and the
+        /// audio already come from - with HasImpactDecal forced on and an Explosion category, so the
+        /// game's decal database resolves a real crater entry instead of an autocannon dent. Its
+        /// DecalType and DecalImpactAngle are deliberately left at the donor's values: a Dirt hit
+        /// overwrites both with Dent/High inside CreateImpactDecalOfType anyway
+        /// (ImpactDecalsManager.cs:405-408).
+        ///
+        /// WHAT IS NOT TOUCHED. ImpactEffectDescriptor (the explosion's own descriptor), DetonateEffect,
+        /// TerrainImpactEffect, ImpactAudio, ShotVisual - so the round's real impact stays exactly what
+        /// it was. The EffectSize the dirt test reads is raised only on a throwaway clone
+        /// (see CachedDecalAmmo), never here.
+        /// </summary>
+        private static void ApplyGunDecal(AmmoType ammo, AmmoType decalDonor)
+        {
+            if (ammo == null)
+            {
+                return;
+            }
+
+            if (decalDonor == null)
+            {
+                // No 30 mm HE round was loaded: ask for a crater with a descriptor of our own rather
+                // than leaving the round with the donor's "no mark" one.
+                ammo.ImpactDecalDescriptor = new ImpactDecalsManager.ImpactDecalDescriptor
+                {
+                    HasImpactDecal = true,
+                    DecalCategory = ImpactDecalsManager.DecalCategory.Explosion,
+                    DecalType = ImpactDecalsManager.DecalType.Dent,
+                    DecalImpactAngle = ImpactDecalsManager.DecalImpactAngle.High,
+                    Flags = ImpactDecalsManager.DecalModifierFlags.None,
+                    MinFilterStrictness = ImpactDecalsManager.DecalFilterStrictness.Medium
+                };
+                return;
+            }
+
+            ImpactDecalsManager.ImpactDecalDescriptor descriptor = decalDonor.ImpactDecalDescriptor;
+            descriptor.HasImpactDecal = true;
+            // The HE donor of a 30 mm round is an autocannon round, so its decal family is the BULLET
+            // one - precisely the family the Dirt refusal above rejects, and half of why a gun run left
+            // no mark. A crater IS an explosive mark, and every round in this belt carries a real HE
+            // detonation (the HEI rounds their own; the AP rounds the HE donor's, see _explosionPrefab),
+            // so the category is stated outright rather than inherited from a bullet's descriptor.
+            descriptor.DecalCategory = ImpactDecalsManager.DecalCategory.Explosion;
+            ammo.ImpactDecalDescriptor = descriptor;
+        }
+
+        /// <summary>
+        /// The throwaway ammunition used ONLY to ask for a crater, keyed by the round it belongs to.
+        ///
+        /// CreateImpactDecalOfType reads TWO things off the ammo it is given: the ImpactDecalDescriptor
+        /// (which entry to stamp) and ImpactEffectDescriptor.EffectSize (the size multiplier, and the
+        /// Dirt refusal above). The mod's gun rounds must keep their own EffectSize - it is what resolves
+        /// their real impact EXPLOSION - so this clone carries everything of the round unchanged except
+        /// that one field, raised to MainGun so the Dirt refusal does not apply.
+        ///
+        /// It is NOT one of our rounds by identity (IsOurRound stays false for it) and it is never put
+        /// into an ammo list, a codex or an AmmoCodexScriptable, so nothing but this decal call can ever
+        /// see it. It is cached per round (reference-keyed - AmmoType.Equals is a value comparison, so a
+        /// Dictionary would confuse two rounds of the same name/category) and lives exactly as long as
+        /// the round does.
+        /// </summary>
+        private static readonly ConditionalWeakTable<AmmoType, AmmoType> _craterAmmo =
+            new ConditionalWeakTable<AmmoType, AmmoType>();
+
+        /// <summary>
+        /// The decal-only clone of one of our gun rounds, or null when this round must not be helped.
+        ///
+        /// The index handling is what keeps the clone out of the game's own tables. Both impact
+        /// databases share the ONE CachedIndex field, and CreateImpactDecalOfType runs
+        /// CachedData[ammoType.CachedIndex] with a WRITER for -1 (it calls CacheNewData and stores the
+        /// new index on the ammo it was handed). Handing it a -1 clone would therefore register the
+        /// clone. So the ROUND is given a table entry first (a no-op in practice: the effects table has
+        /// always cached it before the decal call, because doImpactVFX resolves the effect first) and
+        /// the clone reuses that exact index - and therefore that exact table row, which was built from
+        /// the same decal descriptor this round carries.
+        /// </summary>
+        internal static AmmoType CachedDecalAmmo(AmmoType round)
+        {
+            if (round == null)
+            {
+                return null;
+            }
+
+            AmmoType cached;
+            if (_craterAmmo.TryGetValue(round, out cached))
+            {
+                return cached;
+            }
+
+            ImpactDecalsManager manager = ImpactDecalsManager.Instance;
+            if (manager == null)
+            {
+                return null; // no decal manager in this scene: leave the hit to the game's own body.
+            }
+
+            if (round.CachedIndex == -1)
+            {
+                // Cold path, once per round type: give the ROUND its own entry (never the clone).
+                CacheRoundDecalData(round);
+                if (round.CachedIndex == -1)
+                {
+                    return null; // could not be cached: do not risk registering the clone instead.
+                }
+            }
+
+            AmmoType clone = CloneAmmoType(round);
+            ParticleEffectsManager.ImpactEffectDescriptor real = round.ImpactEffectDescriptor;
+            ParticleEffectsManager.ImpactEffectDescriptor raised = real;
+            raised.EffectSize = ParticleEffectsManager.EffectSize.MainGun;
+            clone.ImpactEffectDescriptor = raised;   // the ONLY difference from the round.
+            clone.CachedIndex = round.CachedIndex;   // reuse the round's row, register nothing new.
+            clone.Name = round.Name;                 // so the decal manager's own messages name the round.
+            _craterAmmo.Add(round, clone);
+            return clone;
+        }
+
+        /// <summary>
+        /// ImpactDecalsDatabaseScriptable.CacheNewData, reached by reflection and called ONLY on one of
+        /// the mod's own rounds - never on the throwaway clone. It is the game's own row builder (it
+        /// writes the new index onto the ammo it is given, which is exactly what is wanted here and is
+        /// why the clone must not be the one passed in).
+        /// </summary>
+        private static void CacheRoundDecalData(AmmoType round)
+        {
+            if (round == null)
+            {
+                return;
+            }
+
+            MethodInfo cacheNewData;
+            FieldInfo databaseField;
+            if (!ResolveDecalDatabase(out cacheNewData, out databaseField))
+            {
+                return; // not resolvable in this build: the hit is left to the game's own body.
+            }
+
+            ImpactDecalsManager manager = ImpactDecalsManager.Instance;
+            if (manager == null)
+            {
+                return; // no decal manager in this scene.
+            }
+
+            object database;
+            try
+            {
+                database = databaseField.GetValue(manager);
+            }
+            catch (Exception)
+            {
+                return;
+            }
+            if (database == null)
+            {
+                return;
+            }
+
+            try
+            {
+                // CacheNewData(AmmoType) writes the new index onto the ammo it is given: exactly why the
+                // ROUND is passed here and the throwaway clone never is.
+                cacheNewData.Invoke(database, new object[] { round });
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("CAS gun crater: could not cache '" + round.Name + "' in the game's decal " +
+                         "database (" + ex.Message + "); the round will keep the value it already had.");
+            }
+        }
+
+        /// <summary>The decal database's row builder and the manager's field holding that database.</summary>
+        private static bool ResolveDecalDatabase(out MethodInfo cacheNewData, out FieldInfo databaseField)
+        {
+            cacheNewData = _cacheNewData;
+            databaseField = _decalDatabase;
+            if (cacheNewData != null && databaseField != null)
+            {
+                return true;
+            }
+
+            if (!_decalDatabaseResolved)
+            {
+                _decalDatabaseResolved = true;
+                try
+                {
+                    FieldInfo field = AccessTools.Field(typeof(ImpactDecalsManager), "_ImpactDecalsScriptable");
+                    MethodInfo method = field != null
+                        ? AccessTools.Method(field.FieldType, "CacheNewData", new[] { typeof(AmmoType) })
+                        : null;
+                    if (field != null && method != null)
+                    {
+                        _decalDatabase = field;
+                        _cacheNewData = method;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Warn("CAS gun crater: the game's decal database could not be reflected: " + ex.Message);
+                }
+            }
+
+            cacheNewData = _cacheNewData;
+            databaseField = _decalDatabase;
+            return cacheNewData != null && databaseField != null;
+        }
+
+        private static bool _decalDatabaseResolved;
+        private static FieldInfo _decalDatabase;
+        private static MethodInfo _cacheNewData;
 
         // ------------------------------------------------------------------
         // Impact resolution: SlotN_CasAccuracy IS the impact circle
@@ -1349,6 +1574,11 @@ namespace CustomFireSupport
         ///
         /// The AP rounds clone the game's 30mm AP round, the HE rounds the game's 30mm HE round, so
         /// each round carries exactly the impact effects, decals and audio of its real counterpart.
+        ///
+        /// The HE donor is ALSO the decal donor for both kinds of round (see
+        /// CasPayloadFactory.ApplyGunDecal): the ground mark these rounds leave is the mark of the HE
+        /// round whose explosion they already use, and it is applied to the CLONES only - the donor's own
+        /// ammo object is never modified, so vanilla and campaign strafing keep leaving no crater.
         /// </summary>
         private static void AttachGunBelt(GameObject hardpoint, string airframeName, AmmoCodexScriptable apDonor)
         {
@@ -1362,8 +1592,8 @@ namespace CustomFireSupport
             AmmoCodexScriptable[] belt;
             if (CasAirframeCatalog.GuessSide(airframeName) == AirframeSide.Pact)
             {
-                AmmoCodexScriptable hei = BuildOfz30(heDonor);
-                AmmoCodexScriptable ap = BuildBr30(apDonor);
+                AmmoCodexScriptable hei = BuildOfz30(heDonor, heDonor);
+                AmmoCodexScriptable ap = BuildBr30(apDonor, heDonor);
                 if (hei == null || ap == null)
                 {
                     Log.Warn("CAS payload factory: could not build the Su-22 gun-pod rounds; using the donor round.");
@@ -1373,8 +1603,8 @@ namespace CustomFireSupport
             }
             else
             {
-                AmmoCodexScriptable api = BuildPgu14(apDonor);
-                AmmoCodexScriptable hei = BuildPgu13(heDonor);
+                AmmoCodexScriptable api = BuildPgu14(apDonor, heDonor);
+                AmmoCodexScriptable hei = BuildPgu13(heDonor, heDonor);
                 if (api == null || hei == null)
                 {
                     Log.Warn("CAS payload factory: could not build the GAU-8/A rounds; using the donor round.");
@@ -1635,10 +1865,6 @@ namespace CustomFireSupport
                 UnityEngine.Object.Destroy(fx, 15f);
             }
 
-            Log.Verbose("CAS impact fallback: '" + info.Name + "' produced no vanilla impact effect (" +
-                        (terrainHit ? "terrain" : "object") + " hit); spawned '" +
-                        (prefab != null ? prefab.name : "no prefab") +
-                        "' at x" + FallbackExplosionScale.ToString("0.##") + ".");
         }
 
         /// <summary>Shallow field-by-field copy of an AmmoType (all public instance fields).</summary>

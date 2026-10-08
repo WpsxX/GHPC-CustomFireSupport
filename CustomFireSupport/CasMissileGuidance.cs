@@ -1,5 +1,6 @@
 using System;
 using UnityEngine;
+using GHPC;
 using GHPC.Vehicle;
 
 namespace CustomFireSupport
@@ -70,6 +71,31 @@ namespace CustomFireSupport
     ///     a nose that drops a few degrees a second, no spin, landing in the dirt around the target.
     ///   * LaserBeamRider (Kh-25): the aircraft IS the guidance, so losing the beam is a control failure.
     ///     The nose slams down, the round yaws and rolls violently and it goes in wherever that takes it.
+    ///
+    /// ---------------------------------------------------------------------------------------------
+    /// AIR TARGETS (the player's "can the AGM-65 / Kh-25 attack a helicopter?")
+    ///
+    /// A round fired at an AIRCRAFT is the same round with a different flight, decided once, at
+    /// SetTarget, from the launch target the payload factory already resolved (CasAirTargets.IsAirUnit:
+    /// TargetShortNameUs Chopper / FastMover, or an IAircraft that reports itself a helicopter). With
+    /// that flag set:
+    ///
+    ///   * the flight is StepGuidedAir: a pure 3-D lead pursuit with no loft, no arch and no terminal
+    ///     dive (those exist to arc a round over the ground onto a target below), and every range that
+    ///     decides the hand-over is the SLANT range - the horizontal-range test is what would hand an
+    ///     airborne target's round over in mid-air while it was still hundreds of metres short;
+    ///   * the intercept lead is iterated (profile.AirLeadIterations) instead of corrected once, because
+    ///     a 60-80 m/s crossing target moves hundreds of metres during a 3-6 s flight;
+    ///   * the turn-rate triple, the hand-over floor and the pass guard come from the profile's air
+    ///     fields, and the target-velocity clamp is raised (a fast mover's per-frame step is above the
+    ///     ground clamp);
+    ///   * an air target that goes away - destroyed, or the seeker's spot lost - HANDS THE ROUND BACK to
+    ///     the game's own impact handling on the line it is flying (HandBackToGame) instead of entering
+    ///     the LOST fail state, so a miss cannot tumble into a fake ground hit. A broken LASER BEAM is
+    ///     still EnterLost: that is the Kh-25's own fail state, not a lost target.
+    ///
+    /// With the flag unset, every line of the ground flight above is the line it always was: the air
+    /// code is a separate method behind one bool, not a set of conditionals threaded through the law.
     /// </summary>
     internal sealed class CasMissileGuidance : MonoBehaviour
     {
@@ -103,8 +129,19 @@ namespace CustomFireSupport
         /// </summary>
         private const float FrameSpikeRatio = 4f;
 
-        /// <summary>Floor for the ratio test, for the very short frames of a high frame rate.</summary>
+        /// <summary>
+        /// Floor for the ratio test, for the very short frames of a high frame rate.
+        /// </summary>
         private const float MinFrameSeconds = 0.005f;
+
+        /// <summary>
+        /// How far the round may travel in one frame and still be handed over to the game's impact
+        /// handling against an AIR target, as a multiple of that travel. The ground figure (1.5, see
+        /// StepGuided) exists to stop the round stepping over its hand-over point; an airborne target is a
+        /// few metres across and moving, so the window is kept as tight as that constraint allows - one
+        /// frame of flight - and the profile's AirHandoverDistanceMeters is the floor under it.
+        /// </summary>
+        private const float AirHandoverFrameScale = 1f;
 
         /// <summary>
         /// Below this step a per-frame displacement says nothing useful about the target's velocity: the
@@ -157,12 +194,27 @@ namespace CustomFireSupport
 
         private float _age;
         private float _releaseY;
-        private bool _loggedProfile;
         private bool _lost;
         private float _lostAge;
-        private bool _loggedLoss;
+
+        /// <summary>
+        /// The unit the round is flying at, and whether it is an AIRCRAFT (see CasAirTargets). Everything
+        /// in this class that reads these two is an air-only branch: with <see cref="_airTarget"/> false
+        /// the flight is the ground flight, byte for byte.
+        /// </summary>
+        private Unit _targetUnit;
+        private bool _airTarget;
+
+        /// <summary>
+        /// Set when an AIR target's round is given back early rather than being declared lost: the mod
+        /// stops steering and the game's own impact handling takes the round from here (see TryStep).
+        /// </summary>
+        private bool _handedToGame;
 
         internal bool Lost { get { return _lost; } }
+
+        /// <summary>True while this round is flown as an anti-aircraft round (an air target, our sortie).</summary>
+        internal bool AirTarget { get { return _airTarget; } }
         internal CASController CarrierController
         {
             get { return _carrier == null ? null : _carrier.GetComponentInParent<CASController>(); }
@@ -192,32 +244,13 @@ namespace CustomFireSupport
             _spotValid = false;
             _lost = false;
             _lostAge = 0f;
-            _loggedLoss = false;
-            _loggedProfile = false;
             _lastRange = float.MaxValue;
             _referenceDt = 0f;
             _intended = Vector3.zero;
             _intendedRotation = Quaternion.identity;
-
-            if (profile != null && !_loggedProfile)
-            {
-                _loggedProfile = true;
-                Log.Info("CAS missile flight: '" + profile.MissileId + "' is " +
-                         (profile.Guidance == CasAirframeCatalog.GuidanceKind.LaserBeamRider
-                             ? "LASER-GUIDED - the carrier has to keep its nose within " +
-                               profile.LaserMaxOffAxisDegrees.ToString("0") +
-                               " deg of the spot until it lands"
-                             : "FIRE-AND-FORGET - the carrier is free at the rail") +
-                         "; " + profile.MotorBurnSeconds.ToString("0.#") + " s of motor at " +
-                         profile.CruiseSpeedMeters.ToString("0") + " m/s (Mach " +
-                         CasAirframeCatalog.MachOf(profile.CruiseSpeedMeters).ToString("0.0#") + "), a " +
-                         profile.BoostClimbDegrees.ToString("0") + " deg pull-up into a " +
-                         profile.LoftHeightMeters.ToString("0") + " m arch, terminal from " +
-                         profile.TerminalRangeMeters.ToString("0") + " m arriving at up to " +
-                         profile.TerminalDiveDegrees.ToString("0") + " deg (" +
-                         profile.TerminalTurnRateDegreesPerSecond.ToString("0") +
-                         " deg/s of control authority there).");
-            }
+            _targetUnit = null;
+            _airTarget = false;
+            _handedToGame = false;
 
             // This component holds the missile's attitude while the game is paused, when the round's own
             // update - and therefore this guidance - is not running at all.
@@ -232,12 +265,31 @@ namespace CustomFireSupport
 
         internal void SetTarget(Transform target)
         {
+            SetTarget(target, null);
+        }
+
+        /// <summary>
+        /// Binds the round to the target it was launched at. <paramref name="targetUnit"/> is the launch
+        /// target the payload factory already resolved (CasPayloadFactory.SetPendingImpact is handed
+        /// `controller.FinalTarget`), and is preferred over the transform lookup because it is the unit
+        /// itself rather than a guess from the aim point's parents.
+        ///
+        /// This is also where the round learns whether it is an ANTI-AIRCRAFT round: an air target takes
+        /// the 3-D lead-pursuit flight below, a ground target takes the arch-and-dive flight this class
+        /// has always flown. The kind is stated in one log line per round, so a log can say which flight
+        /// was flown without guessing from the numbers.
+        /// </summary>
+        internal void SetTarget(Transform target, Unit targetUnit)
+        {
             _target = target;
             _targetSampleValid = target != null;
             if (_targetSampleValid)
             {
                 _lastTargetPosition = target.position;
             }
+
+            _targetUnit = targetUnit != null ? targetUnit : CasAirTargets.UnitOf(target);
+            _airTarget = CasAirTargets.IsAirUnit(_targetUnit);
         }
 
         /// <summary>
@@ -282,23 +334,67 @@ namespace CustomFireSupport
                 if (_targetSampleValid && dt >= MinTargetSampleSeconds && !frameSpike &&
                     jump.sqrMagnitude <= believable * believable)
                 {
-                    _targetVelocity = Vector3.ClampMagnitude(jump / dt, 120f);
+                    // An air target may legitimately be a fast mover, whose per-frame displacement is
+                    // above the ground clamp (a helicopter's is not); the clamp only exists to stop a
+                    // near-zero dt turning a stationary vehicle's transform jitter into a bogus heading.
+                    float clamp = _airTarget && _profile != null
+                        ? Mathf.Max(120f, _profile.AirTargetVelocityClampMeters) : 120f;
+                    _targetVelocity = Vector3.ClampMagnitude(jump / dt, clamp);
                 }
                 // ...otherwise the last good estimate is kept, so a held-over frame predicts the target
                 // where it was last seen travelling instead of along a bogus heading.
                 _lastTargetPosition = current;
                 _targetSampleValid = true;
                 float speed = Mathf.Max(1f, _profile.CruiseSpeedMeters);
-                float timeToTarget = Mathf.Clamp(Vector3.Distance(transform.position, current) / speed,
-                                                  0.05f, 8f);
-                // One correction pass accounts for the target's displacement during the first estimate;
-                // this is stable for ground vehicles and avoids the large lag of chasing the old centre.
-                Vector3 predicted = current + _targetVelocity * timeToTarget;
-                timeToTarget = Mathf.Clamp(Vector3.Distance(transform.position, predicted) / speed,
-                                           0.05f, 8f);
-                predicted = current + _targetVelocity * timeToTarget;
+                Vector3 predicted;
+                if (_airTarget)
+                {
+                    // A helicopter at 60-80 m/s moves several hundred metres during a 3-6 second flight,
+                    // and one correction pass leaves most of that as lag on a crossing target - the round
+                    // then flies at where the target WAS. Iterating the intercept to a fixed point is the
+                    // lead a missile seeker actually computes; two or three passes converge for these
+                    // speeds and ranges. (Ground keeps its own single correction pass, unchanged.)
+                    float airTime = Mathf.Clamp(Vector3.Distance(transform.position, current) / speed,
+                                                0.05f, 8f);
+                    int passes = Mathf.Clamp(_profile.AirLeadIterations, 1, 8);
+                    for (int pass = 0; pass < passes; pass++)
+                    {
+                        predicted = current + _targetVelocity * airTime;
+                        airTime = Mathf.Clamp(Vector3.Distance(transform.position, predicted) / speed,
+                                              0.05f, 8f);
+                    }
+                    predicted = current + _targetVelocity * airTime;
+                }
+                else
+                {
+                    float timeToTarget = Mathf.Clamp(Vector3.Distance(transform.position, current) / speed,
+                                                      0.05f, 8f);
+                    // One correction pass accounts for the target's displacement during the first estimate;
+                    // this is stable for ground vehicles and avoids the large lag of chasing the old centre.
+                    predicted = current + _targetVelocity * timeToTarget;
+                    timeToTarget = Mathf.Clamp(Vector3.Distance(transform.position, predicted) / speed,
+                                               0.05f, 8f);
+                    predicted = current + _targetVelocity * timeToTarget;
+                }
                 _spot = predicted;
                 _spotValid = true;
+            }
+
+            // ---- the target going away -------------------------------------------------------------
+            // An AIR target that is gone - destroyed, despawned, or shot down by somebody else - hands the
+            // round back to the game's own impact handling on the line it is already flying, instead of
+            // entering the LOST fail state. The fail states are the two weapons' characters (a nose that
+            // falls away for the AGM-65, a 540 deg/s tumble for the Kh-25) and both end in the ground: for
+            // an air target that turns a miss into a fake ground hit hundreds of metres from anything. The
+            // ground behaviour is untouched - a ground round whose target dies still goes lost exactly as
+            // it always did.
+            if (!_lost && _airTarget && TargetGone())
+            {
+                HandBackToGame();
+                direction = transform.forward;
+                _intended = direction;
+                _intendedRotation = transform.rotation;
+                return false;
             }
 
             // ---- keep the aim point ----------------------------------------------------------------
@@ -306,15 +402,41 @@ namespace CustomFireSupport
             {
                 if (hasPoint)
                 {
-                    _spot = point;
-                    _spotValid = true;
+                    // THE LEAD IS ONLY USED AGAINST AN AIR TARGET, AND THAT IS DELIBERATE.
+                    //
+                    // `point` is the round's own aim (CasPayloadFactory.TryGetImpactPoint), and for the
+                    // mod's missiles that is the target's LIVE CENTRE plus a ZERO offset (the profiles are
+                    // guaranteed-hit, ImpactOffsetFor returns Vector3.zero). So the ground flight has always
+                    // flown at the centre itself and thrown the prediction computed above away - which is
+                    // exactly right for a 10 m/s vehicle that cannot move far in the last second, and it is
+                    // why the ground law's remark says the single correction pass "avoids the large lag of
+                    // chasing the old centre".
+                    //
+                    // A crossing helicopter at 60-80 m/s is the case that reasoning does not cover: pure
+                    // pursuit of the current centre is a tail chase that arrives behind the target. An air
+                    // target therefore KEEPS the iterated intercept point computed above, and the ground
+                    // path below keeps the centre, untouched.
+                    if (!_airTarget)
+                    {
+                        _spot = point;
+                        _spotValid = true;
+                    }
                 }
                 else if (_profile.Guidance == CasAirframeCatalog.GuidanceKind.FireAndForget || !_spotValid)
                 {
                     // No seeker left to correct the round with, or a laser round that never had the spot.
-                    EnterLost(_profile.Guidance == CasAirframeCatalog.GuidanceKind.LaserBeamRider
-                        ? "the carrier never put the spot where it could be seen"
-                        : "the seeker's target is gone");
+                    if (_airTarget)
+                    {
+                        // Same reasoning as above, and for the laser round as well: an air target with no
+                        // spot left is a shot that cannot be guided any more, not a control failure the
+                        // round should be thrown into the ground over.
+                        HandBackToGame();
+                        direction = transform.forward;
+                        _intended = direction;
+                        _intendedRotation = transform.rotation;
+                        return false;
+                    }
+                    EnterLost();
                 }
                 // A laser rider keeps flying at the spot it last saw even after the VEHICLE is gone: the
                 // spot is on the ground, and the brief's Kh-25 fails on losing the beam, not on the target
@@ -322,6 +444,9 @@ namespace CustomFireSupport
             }
 
             // ---- the beam --------------------------------------------------------------------------
+            // NOTE: a broken BEAM is still EnterLost for an air target as well. That is not the target
+            // being lost, it is the Kh-25's designed fail state ("losing the beam takes the round's
+            // control with it") and it is the weapon's character, not a flight-geometry problem.
             if (!_lost && _profile.Guidance == CasAirframeCatalog.GuidanceKind.LaserBeamRider)
             {
                 CheckLaserBeam();
@@ -361,6 +486,12 @@ namespace CustomFireSupport
         {
             Vector3 position = transform.position;
             Vector3 toSpot = _spot - position;
+
+            if (_airTarget)
+            {
+                return StepGuidedAir(position, toSpot, dt, frameSpike, out direction);
+            }
+
             Vector3 flat = new Vector3(toSpot.x, 0f, toSpot.z);
             float range = flat.magnitude;
 
@@ -442,6 +573,105 @@ namespace CustomFireSupport
         }
 
         /// <summary>
+        /// THE ANTI-AIRCRAFT FLIGHT: a straight 3-D lead pursuit of the intercept point, and nothing else.
+        ///
+        /// WHY IT IS A SEPARATE LAW. The ground law is written in terms of the HORIZONTAL range: the
+        /// hand-over window, the pass guard and the loft are all sized by it, and the requested attitude is
+        /// an angle in the vertical plane that contains the horizontal line of sight. Against an airborne
+        /// target every one of those is wrong in a different way:
+        ///
+        ///   * a round passing under a hovering helicopter has a horizontal range near zero while it is
+        ///     still hundreds of metres away, so the "range &lt;= window" hand-over fires and the round is
+        ///     released from guidance in mid-air, nowhere near the target;
+        ///   * the pass guard tests the same horizontal range, so a legitimate crossing engagement - the
+        ///     range to the LEAD POINT opens for a frame or two while the round is still turning onto it -
+        ///     latches the round as "past the target";
+        ///   * the loft exists to arc a round over the ground and drop it onto a target below; pointed at a
+        ///     target that is already hundreds of metres up it is a wasted climb into a 30-80 degree dive,
+        ///     which a crossing aircraft simply steps out from under.
+        ///
+        /// So an air target is flown as pure lead pursuit in three dimensions: the round turns at the
+        /// profile's air rate onto the moving intercept point (computed in TryStep), and every range that
+        /// decides anything here is the SLANT range - which is the range a round passing under an airborne
+        /// target does NOT have going to zero. Nothing in this method is reachable with an air flag unset.
+        /// </summary>
+        private bool StepGuidedAir(Vector3 position, Vector3 toSpot, float dt, bool frameSpike,
+            out Vector3 direction)
+        {
+            direction = transform.forward;
+            float slant = toSpot.magnitude;
+            float speed = Mathf.Max(1f, _profile.CruiseSpeedMeters);
+
+            // The hand-over window: the tightest one that still cannot be stepped over in a single frame,
+            // because the round's frozen straight line has to intersect a target a few metres across.
+            float window = Mathf.Max(_profile.AirHandoverDistanceMeters,
+                speed * Mathf.Min(dt, 0.05f) * AirHandoverFrameScale);
+            if (frameSpike)
+            {
+                // Same reason as the ground guard: after a pause/hitch the previous range is from before
+                // the gap and must not be used to "prove" a fly-by.
+                _lastRange = slant;
+            }
+            else
+            {
+                float rangeOpened = slant - _lastRange;
+                bool passed = slant <= _profile.AirPassGuardDistanceMeters &&
+                              rangeOpened > speed * dt * 0.25f;
+                if (slant <= window || passed)
+                {
+                    return false;   // close enough for the game's collision/impact handling
+                }
+                _lastRange = slant;
+            }
+
+            // Control authority: the profile's air triple, blended exactly as the ground law blends its own
+            // (most authority while the motor burns, the terminal rate in the last stretch).
+            float burnBlend = Mathf.SmoothStep(0f, 1f,
+                Mathf.Clamp01((_profile.MotorBurnSeconds - _age) / BurnFadeSeconds));
+            float turnDistance = speed * 1f / Mathf.Max(1f, _profile.AirTerminalTurnRateDegreesPerSecond);
+            float terminalBlend = Mathf.SmoothStep(0f, 1f,
+                Mathf.Clamp01((_profile.TerminalRangeMeters + turnDistance - slant) /
+                              Mathf.Max(1f, turnDistance)));
+            float rate = Mathf.Lerp(_profile.AirCruiseTurnRateDegreesPerSecond,
+                                    _profile.AirBoostTurnRateDegreesPerSecond, burnBlend);
+            rate = Mathf.Lerp(rate, _profile.AirTerminalTurnRateDegreesPerSecond, terminalBlend);
+
+            Vector3 wanted = slant > 0.01f ? toSpot / slant : direction;
+            float maxTurn = rate * Mathf.Min(dt, 0.05f) * Mathf.Deg2Rad;
+            direction = Vector3.RotateTowards(transform.forward, wanted, maxTurn, 0f);
+            return true;
+        }
+
+        /// <summary>
+        /// True when this round's AIR target is no longer there to fly at: the transform is gone (Unity's
+        /// destroyed-object equality), or the unit has been neutralized. Only ever consulted under the air
+        /// flag; a ground round keeps the fail states it has always had.
+        /// </summary>
+        private bool TargetGone()
+        {
+            if (_target == null)
+            {
+                return true;
+            }
+            return _targetUnit != null && _targetUnit.Neutralized;
+        }
+
+        /// <summary>
+        /// Stops steering an AIR target's round and gives it back to the game on the heading it already
+        /// has. The laser carrier is released here for the same reason EnterLost releases it: the round no
+        /// longer needs the run held.
+        /// </summary>
+        private void HandBackToGame()
+        {
+            if (_handedToGame)
+            {
+                return;
+            }
+            _handedToGame = true;
+            CasLaserRunHold.End(_carrier);
+        }
+
+        /// <summary>
         /// The lost round: nose down at the profile's rate, with the laser round's yaw wander on top. The
         /// slow version is the AGM-65's "沿最后的惯性切线平缓向前下落"; the fast one is the Kh-25's
         /// "急剧俯冲下坠".
@@ -477,19 +707,18 @@ namespace CustomFireSupport
         {
             if (_carrier == null)
             {
-                EnterLost("the carrier is gone");
+                EnterLost();
                 return;
             }
 
             float offAxis = Vector3.Angle(_carrier.forward, _spot - _carrier.position);
             if (offAxis > _profile.LaserMaxOffAxisDegrees)
             {
-                EnterLost("the carrier's nose is " + offAxis.ToString("0") + " deg off the spot (limit " +
-                          _profile.LaserMaxOffAxisDegrees.ToString("0") + " deg)");
+                EnterLost();
             }
         }
 
-        private void EnterLost(string reason)
+        private void EnterLost()
         {
             if (_lost)
             {
@@ -501,15 +730,6 @@ namespace CustomFireSupport
             // The carrier is free the moment the round stops needing it.
             CasLaserRunHold.End(_carrier);
 
-            if (!_loggedLoss)
-            {
-                _loggedLoss = true;
-                Log.Warn("CAS missile guidance lost: '" + _profile.MissileId + "' - " + reason + ". " +
-                         (_profile.Guidance == CasAirframeCatalog.GuidanceKind.LaserBeamRider
-                             ? "A laser round with no beam has no control left: it tumbles and dives in."
-                             : "A round with no corrections left keeps its attitude and speed and falls " +
-                               "away on the last tangent."));
-            }
         }
 
         private void OnDestroy()

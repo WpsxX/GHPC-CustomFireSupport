@@ -2,7 +2,6 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
-using System.Text;
 using FMODUnity;
 using GHPC;
 using GHPC.Effects;
@@ -54,7 +53,13 @@ namespace CustomFireSupport
     ///                                                gun-run belt; missiles keep the CasAccuracy scale.
     /// 13. CASController.SearchForTarget             - Postfix: multi-plane CAS target spreading (ported
     ///                                                from CheatMode) - planes that would all pick the same
-    ///                                                target are re-routed to distinct ones.
+    ///                                                target are re-routed to distinct ones. Prefix: the
+    ///                                                AIR-TARGET GATE - an enemy aircraft near the point the
+    ///                                                call was made against becomes the sortie's target
+    ///                                                through CASController.CheatTargetUnit, but only after
+    ///                                                vanilla's own visibility test from where the aircraft
+    ///                                                is at that moment (see CasAirTargets; the field is
+    ///                                                re-decided, and cleared, on every search).
     /// 14. CASController.SetLoadout                  - Prefix: activate the hardpoint manager chain a
     ///                                                donor prefab hides on an inactive child, and mark the
     ///                                                aircraft as ours (CustomCasMarker).
@@ -90,6 +95,30 @@ namespace CustomFireSupport
     ///                                                called point, LiveRound.Init arms the round with it,
     ///                                                LiveRound.DoUpdate flies it to 100 m above that point
     ///                                                and opens it into HEDP submunitions. See that file.
+    /// 27. LiveRound.DoImpactDecal                  - Prefix: the terrain CRATER for the mod's own
+    ///                                                air-to-ground missiles AND for the rounds of its
+    ///                                                own gun runs (both factions - any round
+    ///                                                CasPayloadFactory.IsOurRound identifies). It takes
+    ///                                                the game's own decal call over (so the game cannot
+    ///                                                stamp a second one), because LiveRound.doImpactVFX
+    ///                                                can skip the decal altogether when the impact
+    ///                                                EFFECT lookup was empty and neither call result is
+    ///                                                checked anywhere; and because the game refuses a
+    ///                                                Dirt decal outright for Bullet / Autocannon ammo,
+    ///                                                which is every one of these 30 mm clones. A missile
+    ///                                                is passed through as itself; a gun round is passed
+    ///                                                through as CasPayloadFactory.CachedDecalAmmo, a
+    ///                                                cached clone whose only difference is the effect
+    ///                                                SIZE, so the round's own descriptor still resolves
+    ///                                                its own explosion. Vanilla, campaign and enemy
+    ///                                                rounds - and every non-Dirt surface - run the
+    ///                                                original body untouched. For one of the mod's own
+    ///                                                missiles that struck something which is NOT the
+    ///                                                terrain, the ground UNDER the detonation is
+    ///                                                additionally scarred (StampGroundScar): a 250 kg
+    ///                                                warhead that goes off on a hull still craters the
+    ///                                                dirt beneath it, while the object's own (vanilla)
+    ///                                                decal for the hit itself runs unchanged.
     /// </summary>
     internal static class FireSupportPatches
     {
@@ -139,19 +168,6 @@ namespace CustomFireSupport
             private static void Prefix()
             {
                 CustomSupportRegistry.BeginPlayerCasCall();
-
-                // Reports a doubled dispatch only. This used to also BLOCK the second invocation, but
-                // that broke CAS outright: MapClick invokes TryCallCAS for every map click whatever the
-                // map mode, vanilla early-returns from the ones that are not CAS calls, and a per-click
-                // gate could not tell those apart from the real dispatch - so it suppressed the real one
-                // and the panel stopped responding. The duplicate is reported, never blocked.
-                int invocations = CasCallReadinessRepair.NoteTryCallCas();
-                if (invocations > 1)
-                {
-                    Log.Warn("CAS call: MapController.TryCallCAS ran " + invocations + " times for one map " +
-                             "click (frame " + Time.frameCount + "). Each run re-rolls the airframe and " +
-                             "consumes its readiness, so only one of them can send an aircraft.");
-                }
             }
 
             private static void Postfix()
@@ -948,9 +964,6 @@ namespace CustomFireSupport
                         chosen.transform.rotation = owner.transform.rotation;
                     }
 
-                    Log.Info("CAS gun run: firing from a single hardpoint at " +
-                             bestLateral.ToString("0.0") + " m off the centreline (the other mounted " +
-                             "gun copies are dropped from the attack); 140 rounds, one stream.");
                 }
                 catch (Exception ex)
                 {
@@ -988,38 +1001,6 @@ namespace CustomFireSupport
             /// </summary>
             private static readonly Action<CASHardpointManager, CASAttackMeta> FireMeta =
                 CachedDelegate.Create<Action<CASHardpointManager, CASAttackMeta>>(FireMetaMethod);
-            private static readonly HashSet<int> _burstLogged = new HashSet<int>();
-
-            /// <summary>How long after the last round we keep collecting impacts for the hit report.</summary>
-            private const float CollectWindowSeconds = 3f;
-
-            /// <summary>Active per-burst impact collector, fed by CasImpactEffectFallbackPatch.</summary>
-            private static HitReport _report;
-
-            private sealed class HitReport
-            {
-                internal Vector3 TargetCentre;
-                internal readonly HashSet<int> SeenRounds = new HashSet<int>();
-                internal readonly List<float> Distances = new List<float>(160);
-                internal Vector3 Centroid;
-
-                internal void Add(LiveRound round)
-                {
-                    if (round == null)
-                    {
-                        return;
-                    }
-                    int id = round.GetInstanceID();
-                    if (!SeenRounds.Add(id))
-                    {
-                        return; // one impact per round
-                    }
-                    Vector3 offset = round.transform.position - TargetCentre;
-                    offset.y = 0f;
-                    Distances.Add(offset.magnitude);
-                    Centroid += offset;
-                }
-            }
 
             private static bool Prefix(CASHardpointManager __instance, CASAttackMeta meta, ref IEnumerator __result)
             {
@@ -1034,61 +1015,23 @@ namespace CustomFireSupport
                     return true; // vanilla / enemy aircraft: keep the game's own coroutine.
                 }
 
-                // A gun run whose attack entry lost its burst fires ONE round and is over - the "the gun
-                // run only shoots 1 bullet" report. CASHardpointManager.Fire only reaches MultiFire when
+                // A gun run whose attack entry lost its burst fires ONE round and is over. CASHardpointManager.Fire only reaches MultiFire when
                 // TriggerPulls > 1, so a rebuilt entry carrying the default 1 means a single trigger pull.
                 // The unified gun's own belt is the authority for our gun, so restore it before the burst
                 // starts (this has to live here, not in the iterator: an iterator body is compiled into a
                 // generated state machine, out of reach of a static call-graph check).
                 if (meta.UniqueType == CASAttackType.GunRun && meta.TriggerPulls < 2)
                 {
-                    int before = meta.TriggerPulls;
                     CasPayloadFactory.ApplyGunRateOfFire(meta);
-                    Log.Warn("CAS gun burst: the gun run's attack entry carried TriggerPulls=" + before +
-                             ", which releases a single round and then ends the burst; restored the unified " +
-                             "gun's " + meta.TriggerPulls + "-round belt.");
                 }
 
                 __result = Burst(__instance, meta, CasGunAudio.AirframeNameOf(__instance));
                 return false;
             }
 
-            /// <summary>Feeds the impact collector for the burst currently in the air.</summary>
-            internal static void NoteImpact(LiveRound round)
-            {
-                HitReport report = _report;
-                if (report != null)
-                {
-                    report.Add(round);
-                }
-            }
-
             private static IEnumerator Burst(CASHardpointManager manager, CASAttackMeta meta, string gunAirframeName)
             {
                 BusyRef(manager) = true;
-
-                CASController controller = manager != null ? manager.GetComponentInParent<CASController>() : null;
-
-                // One line per sortie: proves the launch-inherit speed the fire control uses.
-                // It must read ~ the aircraft's airspeed (analytic), never 0.
-                if (controller != null && _burstLogged.Add(controller.GetInstanceID()))
-                {
-                    float range = 0f;
-                    if (controller.FinalTarget != null && controller.FinalTarget.Center != null)
-                    {
-                        Vector3 flat = controller.FinalTarget.Center.position - controller.transform.position;
-                        flat.y = 0f;
-                        range = flat.magnitude;
-                    }
-                }
-
-                // Arm the impact collector around the locked target (static during the burst).
-                HitReport report = null;
-                if (controller != null && controller.FinalTarget != null && controller.FinalTarget.Center != null)
-                {
-                    report = new HitReport { TargetCentre = controller.FinalTarget.Center.position };
-                    _report = report;
-                }
 
                 // Sustained gun sound for the whole burst.
                 //
@@ -1161,8 +1104,7 @@ namespace CustomFireSupport
                         elapsed += Time.deltaTime;
                     }
 
-                    // The burst is over: end the sound and free the manager now, then keep collecting
-                    // impacts for the hit report (the last rounds are still in flight).
+                    // The burst is over: end the sound and free the manager now.
                     if (gunSound != null)
                     {
                         CasGunAudio.End(gunSound);   // plays the GSh-30 falling-off tail
@@ -1183,15 +1125,6 @@ namespace CustomFireSupport
                     BusyRef(manager) = false;
                     busyCleared = true;
 
-                    if (report != null)
-                    {
-                        float collectUntil = Time.time + CollectWindowSeconds;
-                        while (Time.time < collectUntil)
-                        {
-                            yield return null;
-                        }
-                        FinishReport(report);
-                    }
                 }
                 finally
                 {
@@ -1209,51 +1142,7 @@ namespace CustomFireSupport
                     {
                         BusyRef(manager) = false;
                     }
-                    _report = null;
                 }
-            }
-
-            /// <summary>Prints one summary line per burst: how many rounds landed where vs the target.</summary>
-            private static void FinishReport(HitReport report)
-            {
-                if (report == null || report.Distances.Count == 0)
-                {
-                    return;
-                }
-                List<float> distances = report.Distances;
-                float nearest = float.MaxValue;
-                float farthest = 0f;
-                float sum = 0f;
-                int near6 = 0;
-                int near12 = 0;
-                for (int i = 0; i < distances.Count; i++)
-                {
-                    float d = distances[i];
-                    if (d < nearest)
-                    {
-                        nearest = d;
-                    }
-                    if (d > farthest)
-                    {
-                        farthest = d;
-                    }
-                    sum += d;
-                    if (d <= 6f)
-                    {
-                        near6++;
-                    }
-                    if (d <= 12f)
-                    {
-                        near12++;
-                    }
-                }
-                Vector3 centroid = report.Centroid / distances.Count;
-
-                Log.Info("CAS gun hit report: " + distances.Count + " impacts; " + near6 + " inside 6 m, " +
-                         near12 + " inside 12 m of the target centre; nearest " + nearest.ToString("0.0") +
-                         " m, mean " + (sum / distances.Count).ToString("0.0") + " m, farthest " +
-                         farthest.ToString("0") + " m; centroid offset from centre (" +
-                         centroid.x.ToString("+0.0;-0.0;0.0") + ", " + centroid.z.ToString("+0.0;-0.0;0.0") + ") m.");
             }
         }
 
@@ -1349,10 +1238,6 @@ namespace CustomFireSupport
                         return; // not one of our rounds (or a spall fragment of one).
                     }
 
-                    // Hit-report telemetry: count every impact of the burst in the air (deduped per
-                    // round), whatever the VFX outcome below is.
-                    CasGunBurstPatch.NoteImpact(__instance);
-
                     if (RicochetRef(__instance))
                     {
                         return; // ricochets have their own (vanilla) effect.
@@ -1370,18 +1255,18 @@ namespace CustomFireSupport
             }
 
             /// <summary>
-            /// The air-to-ground missile's impact: report what happened, and make sure a high-explosive
-            /// warhead is HEARD. The game plays a round's impact sound through
+            /// The air-to-ground missile's impact makes sure a high-explosive warhead is HEARD. The game
+            /// plays a round's impact sound through
             /// ImpactSFXManager.PlaySimpleImpactAudio with "fuzed" set from this round's own warhead state;
             /// when the fuze did not complete it downgrades a bomb or missile detonation to a kinetic clang
             /// (see the switch in that method), which is exactly "an explosion with no explosion sound". The
             /// missile's explosion effect itself comes from the bomb's own effect descriptor, so only the
             /// sound needs the fallback.
+            ///
             /// </summary>
             private static void NoteMissileImpact(LiveRound round, bool terrainHit)
             {
                 bool fuzed = FuzeRef(round) || JetRef(round);
-                bool vfx = terrainHit ? TerrainVfxRef(round) : NonTerrainVfxRef(round);
                 if (fuzed)
                 {
                     return; // the game played the warhead's own explosion sound.
@@ -1389,6 +1274,327 @@ namespace CustomFireSupport
 
                 CasPayloadFactory.PlayFuzedImpactAudio(round.Info, round.transform.position);
             }
+        }
+
+        /// <summary>
+        /// The ground crater for the mod's own air-to-ground MISSILES and for the rounds of its own GUN
+        /// RUNS - plus the ground scar under one of the mod's own missiles that detonated on a unit or an
+        /// object instead of on the terrain (<see cref="StampGroundScar"/>) - and for nothing else.
+        ///
+        /// WHY THE GAME'S OWN STEP CAN PRODUCE NO MARK. A terrain crater is created in exactly one place:
+        /// ImpactDecalsManager.CreateImpactDecalOfType, called from LiveRound.DoImpactDecal
+        /// (LiveRound.cs:1406), which is reached only from LiveRound.doImpactVFX. Two gates suppress it:
+        ///
+        ///   1. doImpactVFX returns BEFORE DoImpactDecal when ParticleEffectsManager
+        ///      .CreateImpactEffectOfType answered null (LiveRound.cs:1487-1491). The effect and the decal
+        ///      are resolved from the same per-round ImpactEffectDescriptor / ImpactDecalDescriptor pair
+        ///      through two separate export-time caches, and neither call's result is checked by the
+        ///      caller, so this failure is completely silent.
+        ///   2. Even when the call happens, CreateImpactDecalOfType returns null for a combination the
+        ///      decal database has no entry for (its own Debug.LogWarning needs
+        ///      ImpactDecalsManager.IsDebug, which a shipped build never sets), for a round whose
+        ///      descriptor asks for no decal at all (ImpactDecalsManager.cs:22-25), and - the reason a gun
+        ///      run used to leave nothing - for ANY round on Dirt whose EffectSize is Bullet or
+        ///      Autocannon (ImpactDecalsManager.cs:405-417). A terrain hit always arrives as Dirt
+        ///      (LiveRound.cs:296), and these gun rounds ARE 30 mm autocannon clones, so that refusal is
+        ///      exactly the vanilla 30 mm behaviour the player asked to change for the mod's rounds only.
+        ///
+        /// WHY THIS HOOKS DoImpactDecal AND NOT doImpactVFX. Because gate 1 means doImpactVFX can skip
+        /// the decal altogether, and because gate 2 leaves no trace on the round, the only place that
+        /// knows whether a mark was made is the decal call itself. This prefix therefore takes that call
+        /// over for the mod's rounds: it runs the SAME ImpactDecalsManager method with the SAME
+        /// arguments the game would have passed - so the entry and the art are the game's own - and then
+        /// reports the result.
+        ///
+        /// DOUBLE-STAMPING. Skipping the original is what makes it impossible rather than merely
+        /// unlikely: for a dirt terrain hit by one of the mod's round types this method body is the only
+        /// decal call for that hit, so the game cannot stamp a second crater next to it. The body is left
+        /// entirely alone for every other round (vanilla, enemy, campaign CAS - the original is run
+        /// unchanged), for every air / object hit, and for every non-Dirt terrain surface (Water), so a
+        /// hull / tree decal is still the game's own and no other round's behaviour changes by one byte.
+        /// The ground SCAR added for a missile's object hit cannot double-stamp either: the original body
+        /// is deliberately left running for that hit, so the scar refuses itself when the struck object
+        /// reports Dirt (the game's own call has already left that dirt crater), and one DoImpactDecal
+        /// call IS one hit - doImpactVFX records the non-terrain decal as done the moment this call
+        /// returns and returns early on that flag next time (LiveRound.cs:1483-1486 and 1524).
+        ///
+        /// <c>IsSpall</c> and <c>_impactSkipDecal</c> are the game's own two suppression flags inside
+        /// DoImpactDecal (LiveRound.cs:1401-1404): when either is set the original would have stamped
+        /// nothing anyway, so this runs it exactly as the game would and stamps nothing either.
+        ///
+        /// THE TWO KINDS OF ROUND ARE HANDLED DIFFERENTLY, and both state their own reason:
+        ///   * a MISSILE carries the bomb donor's own decal descriptor and a Bomb / MainGun effect size,
+        ///     so it passes the dirt test as it stands - the game's own ammo is handed over untouched.
+        ///   * a GUN ROUND must keep its own ImpactEffectDescriptor (it is what resolves the round's
+        ///     explosion, and the dirt test reads the same descriptor's EffectSize). It is therefore
+        ///     asked for a crater through CasPayloadFactory.CachedDecalAmmo: a cached clone that differs
+        ///     from the round in that ONE field and in nothing else.
+        ///
+        /// THE HULL HIT KEEPS ITS OWN DECAL, AND THE GROUND BENEATH IT IS SCARRED TOO (the player's
+        /// decision, option B). The mod aims its own missiles at `Unit.Center` - the unit's origin +
+        /// 1.5 m (Unit.cs:141-154), i.e. a point inside the hull - so the NORMAL outcome of an AGM-65 /
+        /// Kh-25 shot is a contact with the VEHICLE, and a hull contact is not a terrain contact:
+        /// LiveRound sets SurfaceMaterial.Dirt only in its terrain branch (LiveRound.cs:282-298) and
+        /// reports Steel / the tree's own material for everything else. The aim, the guaranteed hit, the
+        /// object's own decal and the terrain branch above are all left exactly as they were; what is
+        /// ADDED is that <see cref="StampGroundScar"/> marks the terrain point below the detonation,
+        /// because a 250 kg-class warhead that goes off on a tank does crater the ground beneath it. A
+        /// vanilla bomb that lands on a tank is untouched.
+        /// </summary>
+        [HarmonyPatch(typeof(LiveRound), "DoImpactDecal")]
+        internal static class CasCraterPatch
+        {
+            private static readonly AccessTools.FieldRef<LiveRound, bool> SpallSkipRef =
+                AccessTools.FieldRefAccess<LiveRound, bool>("_impactSkipDecal");
+
+            private static readonly AccessTools.FieldRef<LiveRound, bool> RicochetRef =
+                AccessTools.FieldRefAccess<LiveRound, bool>("_ricochet");
+
+            private static readonly AccessTools.FieldRef<LiveRound, Vector3> ImpactNormalRef =
+                AccessTools.FieldRefAccess<LiveRound, Vector3>("_impactNormal");
+
+            /// <summary>
+            /// How far below the detonation the ground may be for a scar to be stamped. A hull hit is
+            /// about 1.5 m above the ground (`Unit.Center` is the unit's origin + 1.5 m), so anything
+            /// past this is not a warhead going off against a vehicle - it is a hit on something tall or
+            /// in the air, and a crater invented on the ground far below it would be exactly the "crater
+            /// without ground contact" this patch refuses everywhere else.
+            /// </summary>
+            private const float MaxGroundScarDropMeters = 20f;
+
+            // Harmony can bind ONLY the target method's own parameters. `LiveRound.DoImpactDecal` takes just
+            // `bool terrainHit`, so everything else this patch needs has to be read from the round's fields -
+            // which is exactly where vanilla's own call takes them:
+            //   LiveRound.DoImpactDecal: CreateImpactDecalOfType(Info, this._penetrationLevel, this._ricochet,
+            //   this._isHeat, this._fusedStatus, this._materialHit, ...)
+            // Declaring them as Prefix parameters instead is what killed PatchAll with
+            //   'Parameter "penetrationLevel" not found in method ...DoImpactDecal(bool terrainHit)'
+            // and took the whole mod's initialisation down with it.
+            private static readonly AccessTools.FieldRef<LiveRound, int> PenetrationRef =
+                AccessTools.FieldRefAccess<LiveRound, int>("_penetrationLevel");
+
+            private static readonly AccessTools.FieldRef<LiveRound, bool> HeatRef =
+                AccessTools.FieldRefAccess<LiveRound, bool>("_isHeat");
+
+            private static readonly AccessTools.FieldRef<LiveRound, ParticleEffectsManager.FusedStatus> FusedRef =
+                AccessTools.FieldRefAccess<LiveRound, ParticleEffectsManager.FusedStatus>("_fusedStatus");
+
+            private static readonly AccessTools.FieldRef<LiveRound, ParticleEffectsManager.SurfaceMaterial> MaterialRef =
+                AccessTools.FieldRefAccess<LiveRound, ParticleEffectsManager.SurfaceMaterial>("_materialHit");
+
+            private static bool Prefix(LiveRound __instance, bool terrainHit)
+            {
+                try
+                {
+                    if (__instance == null || __instance.Info == null)
+                    {
+                        return true; // not even a round: the game's own call.
+                    }
+
+                    AmmoType ammo = __instance.Info;
+
+                    if (!terrainHit)
+                    {
+                        // The round struck something that is NOT the terrain. The game's own body (which
+                        // this prefix hands the call back to) stamps that object's own decal through
+                        // CreateImpactDecalOfType(..., impactObject: this._impactObject) - the hull hit
+                        // keeps exactly the decal it always had, and this prefix forces nothing onto it.
+                        //
+                        // What is ADDED for one of the mod's own air-to-ground missiles is the ground scar
+                        // beneath the detonation (StampGroundScar): the warhead went off, just not on the
+                        // terrain, and a 250 kg-class charge on a tank craters the dirt under it. The
+                        // terrain branch below is the other half of this and the two cannot both run for
+                        // one hit: `terrainHit` has one value for one call, and the game itself makes that
+                        // call once per hit (LiveRound.cs:1483-1486, 1524). Then say what was struck, once
+                        // per round type, as before.
+                        if (CasPayloadFactory.IsOurMissile(ammo))
+                        {
+                            StampGroundScar(__instance, ammo);
+                        }
+
+                        return true;
+                    }
+
+                    int penetrationLevel = PenetrationRef(__instance);
+                    bool isHeat = HeatRef(__instance);
+                    ParticleEffectsManager.FusedStatus fusedStatus = FusedRef(__instance);
+                    ParticleEffectsManager.SurfaceMaterial surfaceMaterial = MaterialRef(__instance);
+
+                    // The missile branch first, and it is exactly the branch that shipped before: the
+                    // missile's own ammo, untouched.
+                    bool missile = CasPayloadFactory.IsOurMissile(ammo);
+                    if (!missile && !CasPayloadFactory.IsOurRound(ammo))
+                    {
+                        return true; // vanilla / campaign / enemy / bundle rocket: the game's own body.
+                    }
+
+                    // The surface material of a terrain hit is Dirt or the round is not on terrain at
+                    // all (Water reaches here with SurfaceMaterial.Water): a non-Dirt surface keeps the
+                    // game's own decal for every round, the missiles included.
+                    if (surfaceMaterial != ParticleEffectsManager.SurfaceMaterial.Dirt)
+                    {
+                        return true;
+                    }
+
+                    if (__instance.IsSpall || SpallSkipRef(__instance))
+                    {
+                        // The game's own guards: run the original so it does exactly what it always did.
+                        return true;
+                    }
+
+                    // The ammo the game's own call is made with. For a missile it is the round's; for a
+                    // gun round it is the decal-only clone, because that round's own descriptor must keep
+                    // its EffectSize (it resolves the round's impact EXPLOSION).
+                    AmmoType decalAmmo = ammo;
+                    if (!missile)
+                    {
+                        decalAmmo = CasPayloadFactory.CachedDecalAmmo(ammo);
+                        if (decalAmmo == null)
+                        {
+                            // The clone could not be prepared without risking a write into the game's
+                            // shared tables: hand the hit back rather than registering anything.
+                            return true;
+                        }
+                    }
+
+                    Transform transform = __instance.transform;
+
+                    // The game's own call, field for field (LiveRound.cs:1406). Taking the call over is
+                    // also the whole double-stamp protection: for this hit the original body is the only
+                    // other place a decal is created, and it does not run.
+                    GameObject decal = ImpactDecalsManager.Instance.CreateImpactDecalOfType(
+                        decalAmmo, penetrationLevel, RicochetRef(__instance), isHeat, fusedStatus, surfaceMaterial,
+                        transform.position - transform.forward * 0.01f, transform.forward, transform.up,
+                        ImpactNormalRef(__instance), null);
+
+                    return false;
+                }
+                catch (Exception ex)
+                {
+                    // Never leave an impact unhandled: hand the hit back to the game's own body, which is
+                    // exactly what would have run without this patch.
+                    Log.Error("CAS crater failed, falling back to the game's own decal call: " + ex);
+                    return true;
+                }
+            }
+
+            /// <summary>
+            /// THE GROUND SCAR UNDER A MISSILE'S OBJECT HIT - the complementary half of the terrain
+            /// crater above, and the player's decision (option B): the hull hit keeps exactly the decal
+            /// the game gives it, and the ground under the exploding warhead is marked as well, because a
+            /// 250 kg-class charge that detonates on a tank does crater the dirt beneath it.
+            ///
+            /// TRIGGER. One of the mod's own missiles (<see cref="CasPayloadFactory.IsOurMissile"/>,
+            /// a reference match on the two the factory built), arriving with terrainHit false, i.e. on a
+            /// unit / object / tree - the terrain half of that same call is the branch above, so the two
+            /// are mutually exclusive and neither can stamp the other's decal. Its warhead must be
+            /// bomb-class, read from the round's OWN descriptor (ImpactEffectDescriptor.EffectSize ==
+            /// Bomb) rather than from a list of names: that is the same field the game's own Dirt gate
+            /// sizes the crater from (ImpactDecalsManager.cs:284-304, 1.8-2x for a Bomb).
+            ///
+            /// WHERE. The game's own downward terrain ray, taken from the round's own position -
+            /// CodeUtils.TerrainCollisionCheck (CodeUtils.cs:71-76), the helper CASController and
+            /// HelicopterController use for their own ground contact. It fires straight down from that
+            /// position against the TERRAIN layer alone, which is the layer LiveRound itself tests to
+            /// decide that something is ground (LiveRound.cs:282); the mask is terrain-only, so the hull
+            /// the round just hit cannot block it. Vanilla's own callers never check the miss, so this
+            /// checks the hit collider itself. The hit (not just its point) is kept because the crater has
+            /// to lie on the ground's OWN normal: the round's `_impactNormal` is the HULL's, and a crater
+            /// stood up against the side of a tank is the artefact this avoids.
+            ///
+            /// GUARDS, in order (any of them leaves the game's own hull decal untouched and says why in
+            /// the log): not a spall fragment and not `_impactSkipDecal` (the game's own two suppression
+            /// flags inside DoImpactDecal, LiveRound.cs:1401-1404 - where the game stamps nothing, this
+            /// stamps nothing); a bomb-class warhead; the struck object must NOT report Dirt itself
+            /// (then the original body, which this prefix lets run for a non-terrain hit, has already left
+            /// the game's own dirt crater for this hit - a projected second one would be the double stamp
+            /// this patch exists to prevent, and that is also the ground-ricochet case, which reaches here
+            /// with terrainHit false because doImpactVFX passes `terrainHit &amp;&amp; !ricochet`,
+            /// LiveRound.cs:1455); the ray must hit; and the ground must be between 0 and
+            /// <see cref="MaxGroundScarDropMeters"/> below the detonation, so a hit on something tall or
+            /// in the air does not invent a crater far below it.
+            ///
+            /// ONCE PER HIT. This runs only from the terrainHit false half of one DoImpactDecal call, and
+            /// that call is itself once per hit: doImpactVFX marks the non-terrain decal done the moment
+            /// the call returns and returns early on that flag next time (LiveRound.cs:1483-1486, 1524),
+            /// exactly the once-per-round guarantee the terrain branch relies on when it returns false.
+            /// A round that later reaches the terrain goes through the OTHER branch and gets the game's
+            /// own crater there, as it always did.
+            /// </summary>
+            private static void StampGroundScar(LiveRound round, AmmoType ammo)
+            {
+                try
+                {
+                    // The game's own suppression flags for this very call: a spall fragment, or a hit on
+                    // something whose armour asks for no decals at all, leaves no mark in vanilla and
+                    // leaves none here.
+                    if (round.IsSpall || SpallSkipRef(round))
+                    {
+                        return;
+                    }
+
+                    // Bomb-class only, and from the round's own descriptor - no list of round names.
+                    ParticleEffectsManager.EffectSize effectSize = ammo.ImpactEffectDescriptor.EffectSize;
+                    if (effectSize != ParticleEffectsManager.EffectSize.Bomb)
+                    {
+                        return;
+                    }
+
+                    // The struck object's own material decides whether the game's own call has already
+                    // left a Dirt crater for this hit (ImpactDecalsManager.cs:405-417 requires nothing but
+                    // the material to be Dirt). Adding the projected crater then would stamp the ground
+                    // twice for one hit.
+                    ParticleEffectsManager.SurfaceMaterial material = MaterialRef(round);
+                    if (material == ParticleEffectsManager.SurfaceMaterial.Dirt)
+                    {
+                        return;
+                    }
+
+                    // The ground point: the game's own terrain ray, from the round's own position.
+                    RaycastHit ground = GHPC.Utility.CodeUtils.TerrainCollisionCheck(round.transform);
+                    if (ground.collider == null)
+                    {
+                        return;
+                    }
+
+                    float drop = round.transform.position.y - ground.point.y;
+                    if (drop < 0f)
+                    {
+                        return;
+                    }
+                    if (drop > MaxGroundScarDropMeters)
+                    {
+                        return;
+                    }
+
+                    // The game's own call, field for field the argument list the terrain branch above
+                    // passes (LiveRound.cs:1406) - the round's own state, the round's own ammo untouched -
+                    // with three things changed on purpose: the PROJECTED GROUND POINT (nudged 1 cm back
+                    // along the round's own path, exactly as the terrain branch does it, so the crater sits
+                    // just clear of the surface it is projected onto), the GROUND's own normal, and
+                    // SurfaceMaterial.Dirt. The missile's own ammo passes the game's Dirt gate by itself
+                    // (EffectSize Bomb, HasImpactDecal 1, DecalCategory Explosion - the bomb donor's
+                    // descriptors), so no clone is needed the way a gun round needs one.
+                    Vector3 scarPoint = ground.point - round.transform.forward * 0.01f;
+                    ImpactDecalsManager.Instance.CreateImpactDecalOfType(
+                        ammo, PenetrationRef(round), RicochetRef(round), HeatRef(round), FusedRef(round),
+                        ParticleEffectsManager.SurfaceMaterial.Dirt, scarPoint, round.transform.forward,
+                        Vector3.up, ground.normal, null);
+                }
+                catch (Exception ex)
+                {
+                    // The hull hit itself is not affected in any way by this failing: the caller runs the
+                    // game's own body for it either way.
+                    Log.Error("CAS missile ground scar failed (the object's own decal is unaffected): " + ex);
+                }
+            }
+
+            /// <summary>
+            /// The scar report, once per round type and per outcome. The success line is the one that
+            /// settles the feature in a log ("CAS missile ground scar: 'Kh-25' at (x, y, z) ... -&gt;
+            /// decal '...'"); the failure line names the guard that refused it, so "no scar" is never
+            /// silent and never ambiguous.
+            /// </summary>
         }
 
         /// <summary>
@@ -1534,7 +1740,6 @@ namespace CustomFireSupport
                     {
                         Vector3 toPoint = point - position;
                         float distance = toPoint.magnitude;
-                        Vector3 forward = __instance.transform.forward;
 
                         // Hand over when the point is reached, or when it is already behind the round - the
                         // latter is what keeps a round that penetrated the hull from being turned back
@@ -1868,7 +2073,10 @@ namespace CustomFireSupport
                             guidance = __instance.gameObject.AddComponent<CasMissileGuidance>();
                         }
                         guidance.Init(CasPayloadFactory.ProfileFor(__instance.Info), carrier);
-                        guidance.SetTarget(aim.DynamicTarget);
+                        // The launch target the factory already resolved is handed over with the aim: it is
+                        // what tells the round whether it is an ANTI-AIRCRAFT round (see
+                        // CasMissileGuidance.SetTarget / CasAirTargets.IsAirUnit).
+                        guidance.SetTarget(aim.DynamicTarget, pendingUnit);
                         CasTargetSpreadPatch.RegisterMissile(guidance, pendingUnit);
                     }
 
@@ -1926,11 +2134,48 @@ namespace CustomFireSupport
         /// within 3 km of the called position that it actually has a weapon for. The attack parameters
         /// are recomputed by re-entering TurnTowardTarget so weapon choice / release distance follow
         /// the new target.
+        ///
+        /// ---------------------------------------------------------------------------------------------
+        /// THE AIR TARGET HALF (the player's "can the AGM lock onto a helicopter?").
+        ///
+        /// A map click is a ground point (MapController.cs:1390-1401 flattens it, and
+        /// CASController.SetInterestPoint does it again at :903-908), and the aircraft's spot cone is
+        /// 45 degrees wide and 1000 m long (:928) - so a helicopter is only ever attacked by accident,
+        /// when it happens to be inside that cone AND out-scores every ground unit in it. Vanilla's own
+        /// target table already has the answer for one (TargetShortNameUs.Chopper falls through to
+        /// AirToGroundMissile, CASController.cs:1193-1210), so what is missing is only ACQUISITION:
+        ///
+        ///   * the PREFIX (below) looks for an enemy aircraft near the clicked point, tests it against
+        ///     vanilla's own visibility gate from where the aircraft is right now (CasAirTargets.
+        ///     IsVisibleFrom), and writes the answer into CASController.CheatTargetUnit - the game's own
+        ///     field, honoured at :959-962, so the aircraft selects it through the game's own code path;
+        ///   * the POSTFIX then re-asserts that same, already-validated unit as FinalTarget, because
+        ///     vanilla can still be one frame away from reading the field (its own TargetSearchTime gate
+        ///     at :954) and the mod wants the air target chosen on the first pass.
+        ///
+        /// WHY THE CHECK IS IN THE PREFIX AND NOT ONLY AT CALL TIME. CheatTargetUnit bypasses BOTH the
+        /// cone and the visibility test, so a field written once and then honoured for the rest of the
+        /// sortie is an aircraft attacking through terrain, smoke and trees: the unit can fly behind a
+        /// hill while the sortie is still inbound. The prefix therefore re-decides every search and, in
+        /// its catch-all, CLEARS the field rather than leaving a stale bypass in place. Every step is
+        /// behind CasAirTargets.IsOurMissileSortie, so vanilla aircraft, enemy aircraft, campaign CAS and
+        /// every bomb / rocket / gun slot never enter this code at all.
         /// </summary>
         [HarmonyPatch(typeof(CASController), "SearchForTarget")]
         internal static class CasTargetSpreadPatch
         {
             private const float WideSearchRadius = 8000f;
+
+            /// <summary>
+            /// How near the CLICKED point (in three dimensions, from the clicked ground point to the
+            /// aircraft's centre) an enemy aircraft has to be for a call to be treated as a call against
+            /// it. The map click is the only thing the player supplies, so this is the player's aim: it
+            /// has to cover clicking the map icon of a helicopter that is a few hundred metres up, and it
+            /// must not reach an aircraft flying over the grid square by accident - which is why it is
+            /// measured in 3-D rather than on the ground plan (a fast mover at 5 km altitude is not
+            /// "near" a click even when it is directly above it).
+            /// </summary>
+            private const float AirSearchRadiusMeters = 800f;
 
             private static readonly AccessTools.FieldRef<CASController, List<Unit>> SpottedRef =
                 AccessTools.FieldRefAccess<CASController, List<Unit>>("_spottedTargetsCurrent");
@@ -1954,11 +2199,30 @@ namespace CustomFireSupport
             private static readonly Dictionary<CasMissileGuidance, Unit> MissileClaims =
                 new Dictionary<CasMissileGuidance, Unit>();
 
+            /// <summary>
+            /// Plane -> the enemy aircraft the PREFIX validated against the visibility gate on its most
+            /// recent search. The POSTFIX only ever adopts a unit from here, so an air target can never be
+            /// selected without having passed the gate this frame.
+            /// </summary>
+            private static readonly Dictionary<int, Unit> ValidatedAirTargets = new Dictionary<int, Unit>();
+
+            /// <summary>
+            /// The planes whose CheatTargetUnit THIS MOD wrote and has not cleared again. The field belongs
+            /// to the game (a mission script can set it on any aircraft), so it is only ever cleared here
+            /// for a plane this mod put an air target on - and never for a target the mod did not choose.
+            /// </summary>
+            private static readonly HashSet<int> CheatWritten = new HashSet<int>();
+
+            /// <summary>Scratch list for pruning the validated air targets (never re-allocated per frame).</summary>
+            private static readonly List<int> PrunedAirTargets = new List<int>();
+
             internal static void ResetForScene()
             {
                 Claims.Clear();
                 ReleasedClaims.Clear();
                 MissileClaims.Clear();
+                ValidatedAirTargets.Clear();
+                CheatWritten.Clear();
             }
 
             internal static void Tick()
@@ -1983,6 +2247,28 @@ namespace CustomFireSupport
                     }
                 }
                 for (int i = 0; i < releasedMissiles.Count; i++) MissileClaims.Remove(releasedMissiles[i]);
+
+                // Same for the validated air targets: a unit that is gone must not be left sitting in the
+                // map for a plane whose next search may not run (the whole point of the map is that the
+                // POSTFIX only ever adopts a unit the gate accepted). CheatWritten is deliberately NOT
+                // touched here: the plane's own gate is what clears the game's field, so the mod has to
+                // remember that it was the one that wrote it.
+                if (ValidatedAirTargets.Count > 0)
+                {
+                    PrunedAirTargets.Clear();
+                    foreach (KeyValuePair<int, Unit> pair in ValidatedAirTargets)
+                    {
+                        if (pair.Value == null || pair.Value.Neutralized)
+                        {
+                            PrunedAirTargets.Add(pair.Key);
+                        }
+                    }
+                    for (int i = 0; i < PrunedAirTargets.Count; i++)
+                    {
+                        ValidatedAirTargets.Remove(PrunedAirTargets[i]);
+                    }
+                    PrunedAirTargets.Clear();
+                }
             }
 
             internal static void RegisterMissile(CasMissileGuidance missile, Unit target)
@@ -2001,6 +2287,103 @@ namespace CustomFireSupport
                 }
             }
 
+            /// <summary>
+            /// THE AIR-TARGET GATE, run before vanilla's own target search on every search frame.
+            ///
+            /// It answers one question - "is there an enemy aircraft near the point this call was made
+            /// against, that this sortie can reach and can actually see right now?" - and writes the answer
+            /// into the game's own CASController.CheatTargetUnit. Vanilla then selects it at :959-962
+            /// through its own code, so nothing about the selection, the attack type or the release is
+            /// reimplemented here.
+            ///
+            /// It also OWNS THE FIELD: when there is no visible air target this frame the field is cleared
+            /// again (and the validated map entry with it), because CheatTargetUnit is honoured with no
+            /// cone test and no visibility test of its own - a value left behind is an aircraft that keeps
+            /// attacking a target it can no longer see, through terrain, smoke or a forest.
+            ///
+            /// The catch-all clears rather than returns for the same reason: an exception here must fail
+            /// towards the game's own (visibility-tested) selection, never towards a bypass.
+            ///
+            /// PRIORITY. SearchForTarget carries a second prefix in this mod (CasFlightBehaviourRepair.
+            /// CasSearchAndPassPatch, which declines the search once the aircraft already has a target).
+            /// This one asks to run first so the gate is evaluated on every search that can actually read
+            /// the field. The choice is not load-bearing for safety: a prefix that declines the search also
+            /// skips the original body, and the only code that READS CheatTargetUnit is that body - so there
+            /// is no frame on which vanilla can act on the field without this gate having run first.
+            /// </summary>
+            [HarmonyPriority(Priority.First)]
+            private static void Prefix(CASController __instance)
+            {
+                int id = 0;
+                try
+                {
+                    if (__instance == null)
+                    {
+                        return;
+                    }
+                    id = __instance.GetInstanceID();
+
+                    if (!CasAirTargets.IsOurMissileSortie(__instance))
+                    {
+                        // Not ours, or no air-to-ground missile left to fly at an aircraft. Only a value
+                        // THIS MOD wrote is cleared - the field itself belongs to the game.
+                        ClearOwnCheatTarget(id, __instance);
+                        return;
+                    }
+
+                    Vector3 interest = InterestRef(__instance);
+                    Unit candidate = FindNearbyEnemyAir(__instance, interest, AirSearchRadiusMeters);
+                    if (candidate == null)
+                    {
+                        ClearOwnCheatTarget(id, __instance);
+                        return;
+                    }
+
+                    if (!CasAirTargets.IsVisibleFrom(__instance, candidate))
+                    {
+                        ClearOwnCheatTarget(id, __instance);
+                        return;
+                    }
+
+                    ValidatedAirTargets[id] = candidate;
+                    if (__instance.CheatTargetUnit != candidate)
+                    {
+                        __instance.CheatTargetUnit = candidate;
+                        CheatWritten.Add(id);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // FAIL SAFE, NOT FAIL OPEN: clear the validated entry and the game's bypass field, so an
+                    // error here can never leave an aircraft attacking an unseen target.
+                    ClearOwnCheatTarget(id, __instance);
+                    Log.Error("CAS target spreading: the air-target gate failed (the game's own target " +
+                              "search is kept): " + ex);
+                }
+            }
+
+            /// <summary>
+            /// Drops the validated air target for a plane and, if THIS MOD was the one that wrote
+            /// CASController.CheatTargetUnit on it, clears that field too. A target the game itself put
+            /// there (a scripted cheat CAS call) is left exactly as it was.
+            /// </summary>
+            private static void ClearOwnCheatTarget(int id, CASController plane)
+            {
+                ValidatedAirTargets.Remove(id);
+                if (plane == null || !CheatWritten.Remove(id))
+                {
+                    return; // this mod never wrote the field on this plane: it is the game's business.
+                }
+
+                // Cleared only when it still holds the air unit this mod put there (or nothing / a
+                // destroyed reference): a ground target or a scripted value is not ours to touch.
+                Unit current = plane.CheatTargetUnit;
+                if (current == null || CasAirTargets.IsAirUnit(current))
+                {
+                    plane.CheatTargetUnit = null;
+                }
+            }
+
             private static void Postfix(CASController __instance)
             {
                 try
@@ -2013,14 +2396,22 @@ namespace CustomFireSupport
                     // Claims stay reserved for the lifetime of the sortie, even while the aircraft is
                     // turning away or is temporarily outside its search state.
                     Tick();
+
+                    // An air target the prefix just validated (visible from where the aircraft is) wins over
+                    // whatever vanilla chose: that is the whole feature, and it is the only path by which an
+                    // air unit is ever adopted here.
+                    Unit air;
+                    bool haveAir = ValidatedAirTargets.TryGetValue(__instance.GetInstanceID(), out air) &&
+                                   air != null && !air.Neutralized;
                     Unit chosen = __instance.FinalTarget;
-                    if (chosen == null)
+
+                    if (!haveAir && chosen == null)
                     {
                         return;
                     }
 
-                    Unit result = chosen;
-                    if (IsClaimedByOther(chosen, __instance))
+                    Unit result = haveAir ? air : chosen;
+                    if (!haveAir && IsClaimedByOther(chosen, __instance))
                     {
                         Unit alternative = FindAlternativeTarget(__instance, chosen);
                         if (alternative != null)
@@ -2108,9 +2499,104 @@ namespace CustomFireSupport
                 return best;
             }
 
+            /// <summary>
+            /// THE ENEMY AIRCRAFT NEAREST THE POINT THIS CALL WAS MADE AGAINST, or null.
+            ///
+            /// This is the acquisition the player's request turns on: a map click is a ground point, a
+            /// helicopter is not, and none of the ground searches in this class would ever return one. The
+            /// scan is over SceneUnitsManager.AllLiveUnitsByFaction - the same list vanilla's own
+            /// SearchForTarget walks (:913) - and it keeps only units that
+            ///
+            ///   * belong to a faction hostile to this aircraft (never Neutral, never its own side),
+            ///   * are alive (Unit.Neutralized is false),
+            ///   * are AIRCRAFT by the game's own classification (CasAirTargets.IsAirUnit: ShortNameUs
+            ///     Chopper / FastMover, or an IAircraft that reports itself a helicopter), and
+            ///   * are not already another plane's or another missile's target (IsClaimedByOther, so a
+            ///     pair of sorties splits a pair of helicopters instead of both shooting at one).
+            ///
+            /// The distance is measured in three dimensions from the CLICKED point to the unit's centre, so
+            /// "near the call" means "the player clicked its map icon": a helicopter 300 m up is accepted
+            /// from a click up to ~740 m away, while a fast mover at altitude is not swept up by a click on
+            /// the ground underneath it. `radius` is the caller's decision because the two callers ask
+            /// different questions (the search gate uses AirSearchRadiusMeters; the widening search in
+            /// FindAlternativeTarget has no click to measure from and uses the point it was given).
+            ///
+            /// Nothing is called if nothing is found, and the caller is responsible for the visibility gate
+            /// (CasAirTargets.IsVisibleFrom) before the result is used as a target.
+            /// </summary>
+            internal static Unit FindNearbyEnemyAir(CASController plane, Vector3 point, float radius)
+            {
+                if (plane == null || radius <= 0f)
+                {
+                    return null;
+                }
+
+                List<Unit>[] allUnits = SceneUnitsManager.AllLiveUnitsByFaction;
+                if (allUnits == null)
+                {
+                    return null;
+                }
+
+                Unit best = null;
+                float bestDistanceSquared = radius * radius;
+                for (int f = 0; f < allUnits.Length; f++)
+                {
+                    Faction faction = (Faction)f;
+                    if (faction == Faction.Neutral || faction == plane.unitFaction)
+                    {
+                        continue; // only enemies.
+                    }
+                    List<Unit> list = allUnits[f];
+                    if (list == null)
+                    {
+                        continue;
+                    }
+                    for (int i = 0; i < list.Count; i++)
+                    {
+                        Unit candidate = list[i];
+                        if (candidate == null || candidate.Neutralized || !CasAirTargets.IsAirUnit(candidate))
+                        {
+                            continue;
+                        }
+                        if (IsClaimedByOther(candidate, plane))
+                        {
+                            continue;
+                        }
+                        Transform center = candidate.Center;
+                        if (center == null)
+                        {
+                            continue;
+                        }
+                        float distanceSquared = (center.position - point).sqrMagnitude;
+                        if (distanceSquared < bestDistanceSquared)
+                        {
+                            bestDistanceSquared = distanceSquared;
+                            best = candidate;
+                        }
+                    }
+                }
+                return best;
+            }
+
             private static Unit FindAlternativeTarget(CASController plane, Unit exclude)
             {
                 Vector3 interest = InterestRef(plane);
+
+                // 0) An enemy AIRCRAFT near the called point, for the mod's own air-to-ground-missile
+                // sorties. This comes first because it is the only candidate class the ground searches
+                // below cannot reach at all - a plane's spotting cone is 45 deg / 1000 m and the called
+                // point is on the ground, so a helicopter is otherwise only engaged by luck.
+                if (CasAirTargets.IsOurMissileSortie(plane))
+                {
+                    Unit air = FindNearbyEnemyAir(plane, interest, AirSearchRadiusMeters);
+                    if (air != null && air != exclude)
+                    {
+                        if (CasAirTargets.IsVisibleFrom(plane, air))
+                        {
+                            return air;
+                        }
+                    }
+                }
 
                 // 1) The plane's own spotted list (vanilla already filtered visibility + attackability).
                 Unit best = FindNearest(plane, SpottedRef(plane), interest, exclude);

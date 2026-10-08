@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Text;
 using GHPC;
 using GHPC.Vehicle;
 using GHPC.Weaponry.CAS;
@@ -37,7 +36,7 @@ namespace CustomFireSupport
         /// </summary>
         private static readonly string[] AirframeNameHints =
         {
-            "a10", "a-10", "f104", "f-104", "f4", "f-4", "f15", "f-15", "su22", "su-22", "su25", "su-25",
+            "a10", "a-10", "f104", "f-104", "f4", "f-4", "su22", "su-22", "su25", "su-25",
             "mig17", "mig21", "mig23", "mig"
         };
 
@@ -70,9 +69,6 @@ namespace CustomFireSupport
             {
                 Log.Warn("no CAS airframe template found: this mission has none and no aircraft prefab / loadout " +
                          "is currently loaded. Play any mission that has CAS once and the template is cached for the rest of the session.");
-            }
-            else
-            {
             }
             return templates;
         }
@@ -124,14 +120,8 @@ namespace CustomFireSupport
                 }
 
                 // Supplement with the mission's OWN loadouts, paired onto the bundle's airframes only.
-                int before = templates.Count;
-                int sceneLoadouts = AddSceneLoadouts(templates);
-                if (sceneLoadouts > 0)
-                {
-                }
+                AddSceneLoadouts(templates);
 
-                Log.Verbose("CAS roster: " + fromBundle + " bundle template(s), " + templates.Count +
-                            " in total; every AIRFRAME is a bundled prefab asset.");
                 return templates;
             }
             finally
@@ -219,7 +209,7 @@ namespace CustomFireSupport
 
         /// <summary>
         /// Adds one template per bundled airframe x bundled loadout that fits it, straight from the
-        /// name-keyed catalogue (CasPrewarmer.BundleAirframeNames / AirframePrefab / LoadoutAsset).
+        /// name-keyed catalogue (CasPrewarmer.BundleAirframeNames / AirframePrefab / BundleLoadouts).
         ///
         /// These are guaranteed to be prefab ASSETS rather than scene instances, which is what makes the
         /// aircraft actually reach CASController.Start(). Returns how many templates were added.
@@ -411,10 +401,6 @@ namespace CustomFireSupport
                     }
                     AddCandidate(templates, donor, loadouts[j], Faction.Neutral,
                         "loaded airframe" + (donorIsAsset[i] ? " prefab" : string.Empty), donorIsAsset[i], manager);
-                }
-
-                if (own == null && loadouts.Count == 0)
-                {
                 }
             }
         }
@@ -699,32 +685,6 @@ namespace CustomFireSupport
         private static int AttachCount(CASHardpointManager manager)
         {
             return manager == null || manager.HardpointAttachPoints == null ? 0 : manager.HardpointAttachPoints.Length;
-        }
-
-        private static string Describe(List<CasTemplate> templates)
-        {
-            StringBuilder builder = new StringBuilder();
-            for (int i = 0; i < templates.Count; i++)
-            {
-                if (i > 0)
-                {
-                    builder.Append("; ");
-                }
-                CasTemplate template = templates[i];
-                AirframeInfo catalogInfo = CasAirframeCatalog.Match(template.Name);
-                builder.Append('\'').Append(template.Name).Append("' + loadout '").Append(template.LoadoutName)
-                    .Append("' [").Append(template.Faction).Append(", ")
-                    .Append(template.IsAsset ? "prefab" : "instance").Append(", ")
-                    .Append(template.Source).Append(", attacks=")
-                    .Append(FireSupportTemplates.DescribeAttacks(template.AvailableAttacks));
-                if (catalogInfo != null)
-                {
-                    builder.Append(", catalog=").Append(catalogInfo.Side).Append('/').Append(catalogInfo.Flyover)
-                        .Append('/').Append(FireSupportTemplates.DescribeAttacks(catalogInfo.TypicalAttacks));
-                }
-                builder.Append(']');
-            }
-            return builder.ToString();
         }
     }
 }

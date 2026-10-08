@@ -32,8 +32,8 @@
     <DebugType>none</DebugType>
     <Optimize>true</Optimize>
     <OutputPath>bin\Release\</OutputPath>
-    <!-- Routine Info/Verbose logging is compile-time stripped from Release builds. -->
-    <DefineConstants>TRACE</DefineConstants>
+    <!-- Diagnostics are compile-time stripped from Release builds. -->
+    <DefineConstants></DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
@@ -123,6 +123,7 @@
     <Compile Include="CasMissileGuidance.cs" />
     <Compile Include="CasMissilePauseHold.cs" />
     <Compile Include="CasMissileAttackRun.cs" />
+    <Compile Include="CasAirTargets.cs" />
     <Compile Include="CasLaserRunHold.cs" />
     <Compile Include="FactionShellCatalog.cs" />
     <Compile Include="FactionBatteryProfiles.cs" />

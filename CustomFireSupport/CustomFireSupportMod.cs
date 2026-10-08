@@ -19,18 +19,13 @@ namespace CustomFireSupport
     /// </summary>
     public class CustomFireSupportMod : MelonMod
     {
-        internal static CustomFireSupportMod Instance;
-
         /// <summary>Forwarded to the log helper; refreshed every time the config is read.</summary>
         public override void OnInitializeMelon()
         {
-            Instance = this;
-
             try
             {
                 ConfigSchema.Initialize();
                 HarmonyInstance.PatchAll();
-                Log.Info("The slots are built at the start of every mission; edit the cfg and restart the mission to apply changes.");
             }
             catch (Exception ex)
             {

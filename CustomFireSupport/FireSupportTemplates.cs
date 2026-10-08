@@ -47,42 +47,6 @@ namespace CustomFireSupport
             }
         }
 
-        internal string Describe()
-        {
-            string detail = AmmoDetail();
-            string name = AmmoName;
-            if (detail.Length > 0)
-            {
-                name += " (" + detail + ")";
-            }
-            return name + " [" + Source + "]";
-        }
-
-        /// <summary>
-        /// Calibre / category / explosive content of the shell behind this template, so a log reader can
-        /// see what a slot is really going to fire (an ATGM and a 30 mm round both passed for "155 mm HE"
-        /// in the log of a Fulda 1989 mission, and neither name nor source said so).
-        /// </summary>
-        internal string AmmoDetail()
-        {
-            if (Choice == null || Choice.Ammo == null || Choice.Ammo.AmmoType == null)
-            {
-                return string.Empty;
-            }
-
-            AmmoType ammo = Choice.Ammo.AmmoType;
-            StringBuilder detail = new StringBuilder();
-            detail.Append(ammo.GetFinalCaliber().ToString("0.#")).Append("mm, ").Append(ammo.Category);
-            if (ammo.Guidance != AmmoType.GuidanceType.Unguided)
-            {
-                detail.Append(", ").Append(ammo.Guidance);
-            }
-            if (ammo.TntEquivalentKg > 0f)
-            {
-                detail.Append(", ").Append(ammo.TntEquivalentKg.ToString("0.#")).Append("kg TNTe");
-            }
-            return detail.ToString();
-        }
     }
 
     /// <summary>A candidate aircraft + loadout that can be cloned into a custom CAS slot.</summary>
@@ -229,9 +193,6 @@ namespace CustomFireSupport
             {
                 GetOrCreate(templates, fallback[i].Munition).Add(fallback[i]);
             }
-            Log.Info("loaded-ammo fallback: " + fallback.Count + " artillery shell candidate(s) kept, " +
-                     skipped + " other ammo asset(s) skipped (missiles, rockets, small-calibre and bomb-sized " +
-                     "rounds); a slot fires the best-ranked candidate of its shell type (see below).");
 
             // Smoke fallback: GHPC's smoke artillery is a per-mission battery choice (the M110A1 /
             // M116A1 "Smoke Artillery" projectile prefab), not an ammo codex, so a mission whose
@@ -256,10 +217,6 @@ namespace CustomFireSupport
                         },
                         Source = DescribePrefabSource(smokePrefab) + " smoke shell for " + playerFaction
                     });
-                    Log.Info("this mission's batteries carry no smoke shell; falling back to the projectile prefab '" +
-                             smokePrefab.name + "' (" + DescribePrefabSource(smokePrefab) + ", " +
-                             DescribeFactionFit(smokePrefab.name, playerFaction) + ") so smoke slots still work." +
-                             DescribeBrokenVisuals(smokePrefab));
                 }
             }
 
@@ -282,36 +239,12 @@ namespace CustomFireSupport
                         },
                         Source = DescribePrefabSource(flare) + " illumination shell for " + playerFaction
                     });
-                    Log.Info("this mission's batteries carry no illumination shell; falling back to the projectile " +
-                             "prefab '" + flare.name + "' (" + DescribePrefabSource(flare) + ", " +
-                             DescribeFactionFit(flare.name, playerFaction) + ") so illumination slots " +
-                             "still work." + DescribeBrokenVisuals(flare));
                 }
             }
 
             if (templates.Count == 0)
             {
                 Log.Warn("no artillery shell templates found in this mission (no batteries and no loaded ammo codex) - artillery slots cannot be created here.");
-            }
-            else
-            {
-                StringBuilder builder = new StringBuilder();
-                foreach (KeyValuePair<MunitionKind, List<AmmoTemplate>> pair in templates)
-                {
-                    if (builder.Length > 0)
-                    {
-                        builder.Append("; ");
-                    }
-                    builder.Append(pair.Key).Append(" = ");
-                    for (int i = 0; i < pair.Value.Count; i++)
-                    {
-                        if (i > 0)
-                        {
-                            builder.Append(" | ");
-                        }
-                        builder.Append('\'').Append(pair.Value[i].Describe()).Append('\'');
-                    }
-                }
             }
             return templates;
         }
@@ -322,39 +255,6 @@ namespace CustomFireSupport
             return CasPrewarmer.IsFromOurBundle(prefab)
                 ? "from the mod's cas_assets bundle"
                 : "from the game's own loaded assets";
-        }
-
-        /// <summary>
-        /// Reports materials whose shader is missing. The cas_assets bundle is built from an exported copy
-        /// of the game's assets, and an exporter cannot recover compiled shaders, so a shader-less material
-        /// there is exactly what turns a smoke / flare effect into opaque white blocks - better to say so in
-        /// the log than to leave the player guessing. Empty material slots are normal (several particle
-        /// systems in these prefabs have none on purpose) and are not counted.
-        /// </summary>
-        private static string DescribeBrokenVisuals(GameObject prefab)
-        {
-            Renderer[] renderers = prefab.GetComponentsInChildren<Renderer>(true);
-            int broken = 0;
-            for (int i = 0; i < renderers.Length; i++)
-            {
-                Renderer renderer = renderers[i];
-                if (renderer == null)
-                {
-                    continue;
-                }
-                Material[] materials = renderer.sharedMaterials;
-                for (int m = 0; m < materials.Length; m++)
-                {
-                    if (materials[m] != null && materials[m].shader == null)
-                    {
-                        broken++;
-                    }
-                }
-            }
-            return broken == 0
-                ? string.Empty
-                : " [WARN] " + broken + " material(s) on '" + prefab.name +
-                  "' have no shader - those parts render as untextured blocks; reinstall the cas_assets bundle.";
         }
 
         /// <summary>
@@ -426,17 +326,6 @@ namespace CustomFireSupport
             return FactionShellCatalog.Score(name, illumination,
                 playerFaction == Faction.Red ? AirframeSide.Pact : AirframeSide.Nato);
         }
-        /// <summary>Human readable faction fit of a chosen prefab, for the log.</summary>
-        private static string DescribeFactionFit(string prefabName, Faction playerFaction)
-        {
-            int score = ScoreEffectPrefab(prefabName, prefabName.ToLowerInvariant().Contains("illum") ||
-                                                     prefabName.ToLowerInvariant().Contains("flare"), playerFaction);
-            return score >= 100
-                ? "a " + playerFaction + " shell"
-                : "not a " + playerFaction + "-specific shell (the bundle ships one for " +
-                  (playerFaction == Faction.Red ? "Blue" : "Red") + " only)";
-        }
-
         /// <summary>
         /// Reads a battery's firing parameters. All of them are private serialized fields on GHPC's
         /// ArtilleryBattery, so they are reached through AccessTools (the public API only exposes the

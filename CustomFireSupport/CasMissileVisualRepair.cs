@@ -40,16 +40,12 @@ namespace CustomFireSupport
     {
         private const string OurShaderPrefix = "CustomFireSupport/";
 
-        /// <summary>Names already reported in this scene.</summary>
-        private static readonly HashSet<string> _reported = new HashSet<string>();
-
         /// <summary>Per-ammunition verdict for this scene: false = nothing left to do, true = inspect each round.</summary>
         private static readonly Dictionary<AmmoType, bool> _needsPerRoundWork =
             new Dictionary<AmmoType, bool>(AmmoReferenceComparer.Instance);
 
         internal static void ResetForScene()
         {
-            _reported.Clear();
             _needsPerRoundWork.Clear();
         }
 
@@ -124,16 +120,6 @@ namespace CustomFireSupport
                     }
                 }
 
-                // DIAGNOSTIC: what the round is actually wearing when it spawns. The Kh-25 renders as a white
-                // model while its bundle material verifies correct, so this prints material / shader /
-                // texture per renderer - one run says which link in the chain is broken.
-                for (int d = 0; d < renderers.Length; d++)
-                {
-                    Renderer dr = renderers[d];
-                    if (dr == null) { continue; }
-                    Material dm = dr.sharedMaterial;
-                    Texture dt = (dm != null && dm.HasProperty("_MainTex")) ? dm.GetTexture("_MainTex") : null;
-                }
                 int adopted = 0;
                 int approximated = 0;
                 int hidden = 0;
@@ -186,9 +172,6 @@ namespace CustomFireSupport
                     if (ammo != null)
                     {
                         _needsPerRoundWork[ammo] = adopted > 0 || hidden > 0 || approximated > 0;
-                    }
-                    if (adopted > 0 || hidden > 0)
-                    {
                     }
                     return;
                 }
@@ -277,11 +260,7 @@ namespace CustomFireSupport
                 return null;
             }
 
-            Material found = CasBundleMaterialRepair.FindGameMaterial(name);
-            if (_reported.Add(name))
-            {
-            }
-            return found;
+            return CasBundleMaterialRepair.FindGameMaterial(name);
         }
     }
 }

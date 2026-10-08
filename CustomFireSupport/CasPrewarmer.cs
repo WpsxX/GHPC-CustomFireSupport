@@ -78,19 +78,16 @@ namespace CustomFireSupport
         /// The CAS airframes the bundle ships, keyed by the prefab name used inside the bundle.
         /// These are the models the mod may summon; nothing else is eligible.
         ///
-        /// F15 belongs to this list even though GHPC ships no F15 prefab: the aircraft exists only as
-        /// scene objects in the game's terrain scenes, so it was extracted into one (CasF15Extract) and
-        /// added to the bundle alongside the other eight. Keep this list and CasBundleRebuild's Airframes
-        /// array in step - a name listed here that the bundle lacks is reported loudly by
-        /// ReportAirframeCatalogue.
-        ///
         /// SU25 likewise has no prefab in the game: it is the player's own OBJ model, reconstructed into an
         /// airframe by CasSu25Build from the components a CAS aircraft needs. It is the Red side's
         /// designated gun-run aircraft.
+        ///
+        /// Keep this list and CasBundleRebuild's Airframes array in step - a name listed here that the
+        /// bundle lacks is reported loudly by ReportAirframeCatalogue.
         /// </summary>
         internal static readonly string[] BundleAirframeNames =
         {
-            "A10", "F104", "F4_LW", "F4_USAF", "F15", "MiG17", "MiG21", "MiG23BN", "SU22", "SU25"
+            "A10", "F104", "F4_LW", "F4_USAF", "MiG17", "MiG21", "MiG23BN", "SU22", "SU25"
         };
 
         private static readonly Dictionary<string, GameObject> _airframesByName =
@@ -138,17 +135,6 @@ namespace CustomFireSupport
             }
             GameObject found;
             return _airframesByName.TryGetValue(name.Trim(), out found) ? found : null;
-        }
-
-        /// <summary>The bundled loadout asset with this name, or null when the bundle does not ship it.</summary>
-        internal static CASLoadoutScriptable LoadoutAsset(string name)
-        {
-            if (string.IsNullOrEmpty(name))
-            {
-                return null;
-            }
-            CASLoadoutScriptable found;
-            return _loadoutsByName.TryGetValue(name.Trim(), out found) ? found : null;
         }
 
         /// <summary>
@@ -204,37 +190,6 @@ namespace CustomFireSupport
             if (loadout != null && !string.IsNullOrEmpty(loadout.name))
             {
                 _loadoutsByName[loadout.name] = loadout;
-            }
-        }
-
-        /// <summary>Reports which airframes the bundle actually delivered, and names any that are absent.</summary>
-        private static void ReportAirframeCatalogue()
-        {
-            List<string> present = new List<string>();
-            List<string> absent = new List<string>();
-            for (int i = 0; i < BundleAirframeNames.Length; i++)
-            {
-                if (AirframePrefab(BundleAirframeNames[i]) != null)
-                {
-                    present.Add(BundleAirframeNames[i]);
-                }
-                else
-                {
-                    absent.Add(BundleAirframeNames[i]);
-                }
-            }
-
-            Log.Info("CAS airframe catalogue: " + present.Count + "/" + BundleAirframeNames.Length +
-                     " airframe(s) in the bundle [" + string.Join(", ", present.ToArray()) + "]; " +
-                     _loadoutsByName.Count + " loadout(s).");
-
-            if (absent.Count > 0)
-            {
-                // Loud, because a missing airframe means a slot can never be filled by that model and
-                // the slot would otherwise look like a random failure.
-                Log.Error("CAS airframe catalogue: MISSING from the bundle: " + string.Join(", ", absent.ToArray()) +
-                          ". The bundle is incomplete - rebuild it with CasBundleRebuild (Unity CLI) before " +
-                          "reporting a summon failure, because no mission can supply these models.");
             }
         }
 
@@ -362,9 +317,6 @@ namespace CustomFireSupport
                 return;
             }
 
-            int loaded = 0;
-            int failed = 0;
-            int casCapable = 0;
             for (int i = 0; i < keys.Length; i++)
             {
                 string key = keys[i];
@@ -374,50 +326,27 @@ namespace CustomFireSupport
                     GameObject prefab = handle.WaitForCompletion();
                     if (prefab == null)
                     {
-                        failed++;
                         Log.Warn("CAS pre-warm: '" + key + "' resolved to null (wrong type or missing address).");
                         Addressables.Release(handle);
                         continue;
                     }
                     _keptHandles.Add(handle);
                     _keptPrefabs.Add(prefab);
-                    loaded++;
-
-                    // A prefab only feeds the CAS pipeline if it actually carries CAS components. GHPC's
-                    // aircraft units have neither, so pre-warming them cannot supply a sortie - say so
-                    // instead of silently reporting success.
-                    bool capable = prefab.GetComponentInChildren<CASController>(true) != null ||
-                                   prefab.GetComponentInChildren<CASHardpointManager>(true) != null;
-                    if (capable)
-                    {
-                        casCapable++;
-                    }
-                    else
-                    {
-                    }
                 }
                 catch (Exception ex)
                 {
-                    failed++;
                     Log.Warn("CAS pre-warm: '" + key + "' failed (" + ex.GetType().Name + ": " + ex.Message + ").");
                 }
             }
 
-            Log.Info("CAS pre-warm finished: " + loaded + " asset(s) kept (" + casCapable + " CAS-capable), " +
-                     failed + " failed" +
-                     (casCapable > 0
-                         ? "; these now feed the CAS donor scan and the hardpoint library."
-                         : "; none of them can feed CAS, so CAS in a mission without its own airframes still " +
-                           "needs the session cache from an earlier CAS mission."));
         }
 
         /// <summary>
         /// Tracks one prefab an ammunition asset points at (its flight visual, shown model or one of its
         /// detonation prefabs). Idempotent: a prefab the bundle already listed, or one shared by several
-        /// hardpoints, is counted only once. <paramref name="counter"/> is bumped for every prefab that was
-        /// NOT already known, i.e. for the indirect dependencies this pass exists for.
+        /// hardpoints, is added only once.
         /// </summary>
-        private static void TrackAmmoPrefab(GameObject prefab, ref int counter)
+        private static void TrackAmmoPrefab(GameObject prefab)
         {
             if (prefab == null || _bundleObjects.Contains(prefab))
             {
@@ -425,7 +354,6 @@ namespace CustomFireSupport
             }
             _bundlePrefabs.Add(prefab);
             TrackBundlePrefab(prefab);
-            counter++;
         }
 
         /// <summary>
@@ -439,8 +367,6 @@ namespace CustomFireSupport
             string path = FindBundlePath();
             if (path == null)
             {
-                Log.Info("CAS pre-warm: no 'cas_assets' bundle next to the mod DLL (optional; " +
-                         "fixed-wing CAS airframes then only load with a terrain scene).");
                 return;
             }
 
@@ -464,9 +390,6 @@ namespace CustomFireSupport
                 foreach (Shader shader in Resources.FindObjectsOfTypeAll<Shader>())
                     if (shader != null && !previousShaders.Contains(shader)) BundleShaders.Add(shader);
 
-                int prefabs = 0;
-                int loadouts = 0;
-                int hardpoints = 0;
                 for (int i = 0; i < assets.Length; i++)
                 {
                     UnityEngine.Object asset = assets[i];
@@ -484,17 +407,8 @@ namespace CustomFireSupport
                     GameObject go = asset as GameObject;
                     if (go != null)
                     {
-                        prefabs++;
                         _bundlePrefabs.Add(go);
                         TrackBundlePrefab(go);
-                        if (go.GetComponentInChildren<CASHardpoint>(true) != null)
-                        {
-                            hardpoints++;
-                        }
-                    }
-                    else if (asset is CASLoadoutScriptable)
-                    {
-                        loadouts++;
                     }
                 }
 
@@ -517,8 +431,6 @@ namespace CustomFireSupport
                 // of the full dependency graph while this traversal alone reaches 72 of them, so the scan
                 // stays the authority and the pass below only reports a disagreement.
                 int rootCount = _bundlePrefabs.Count;
-                int airborne = 0;
-                int impact = 0;
                 for (int p = 0; p < rootCount; p++)
                 {
                     foreach (CASHardpoint hardpoint in _bundlePrefabs[p].GetComponentsInChildren<CASHardpoint>(true))
@@ -542,10 +454,18 @@ namespace CustomFireSupport
                         }
                         if (ammo == null) continue;
                         _bundleAmmo.Add(ammo);
-                        TrackAmmoPrefab(ammo.ShotVisual, ref airborne);
-                        TrackAmmoPrefab(ammo.VisualModel, ref airborne);
-                        TrackAmmoPrefab(ammo.DetonateEffect, ref impact);
-                        TrackAmmoPrefab(ammo.TerrainImpactEffect, ref impact);
+                        // ORDERING IS LOAD-BEARING: the crater repair must run HERE, at pre-warm, before a
+                        // single round is fired. CasImpactCacheRepair memoizes a null decal result per
+                        // ammo/surface/type combination, so a repair applied after the first FFAR hit would
+                        // be answered from that memo and silently ignored for the rest of the session. The
+                        // call guards itself on EffectSize == Rocket and on the flag being clear, so every
+                        // correctly-described round - the S-5K, the S-8K, the bombs, the missiles - is
+                        // untouched. See CasImpactCacheRepair.RepairRocketImpactDecal.
+                        CasImpactCacheRepair.RepairRocketImpactDecal(ammo);
+                        TrackAmmoPrefab(ammo.ShotVisual);
+                        TrackAmmoPrefab(ammo.VisualModel);
+                        TrackAmmoPrefab(ammo.DetonateEffect);
+                        TrackAmmoPrefab(ammo.TerrainImpactEffect);
                     }
                 }
                 // Verification pass. The before/after scan above is the authority on WHICH materials and
@@ -553,8 +473,6 @@ namespace CustomFireSupport
                 // renderer the traversal reached can add nothing to it - but if it ever does, the two
                 // sources disagree and the material would render with its exported placeholder shader. So
                 // pick the stragglers up with the same criterion, and say so in the log.
-                int lateMaterials = 0;
-                int lateShaders = 0;
                 foreach (Renderer renderer in BundleRenderers)
                 {
                     if (renderer == null) continue;
@@ -563,54 +481,18 @@ namespace CustomFireSupport
                     {
                         Material material = materials[m];
                         if (material == null || previousMaterials.Contains(material)) continue;
-                        if (BundleMaterials.Add(material)) lateMaterials++;
-                        if (material.shader != null && !previousShaders.Contains(material.shader) &&
-                            BundleShaders.Add(material.shader)) lateShaders++;
+                        BundleMaterials.Add(material);
+                        if (material.shader != null && !previousShaders.Contains(material.shader))
+                        {
+                            BundleShaders.Add(material.shader);
+                        }
                     }
                 }
 
-                Log.Info("CAS bundle graph: " + _bundlePrefabs.Count + " prefab(s) tracked (" + prefabs +
-                         " returned by the bundle, " + airborne + " round visual(s) and " + impact +
-                         " detonation prefab(s) reached through " + _bundleAmmo.Count + " ammunition asset(s)); " +
-                         BundleRenderers.Count + " renderer(s), " + BundleMaterials.Count + " material(s), " +
-                         BundleShaders.Count + " shader(s) covered by the shader repair" +
-                         (lateMaterials + lateShaders > 0
-                             ? " (" + lateMaterials + " material(s) and " + lateShaders +
-                               " shader(s) only the traversal reached)."
-                             : " (the load scan and the traversal agree)."));
-
-                // The aircraft roster is taken from this catalogue, so say up front what the bundle
-                // actually delivered - a missing model would otherwise surface much later as a slot that
-                // "randomly" sends nothing.
-                ReportAirframeCatalogue();
-
-                Log.Info("CAS pre-warm: loaded bundle '" + Path.GetFileName(path) + "' (" + DescribeBundleFile(path) +
-                         ") -> " + assets.Length + " asset(s), " + prefabs + " prefab(s) (" + hardpoints +
-                         " hardpoint(s)), " + loadouts +
-                         " loadout(s); all CAS aircraft and hardpoints are now available in every mission.");
             }
             catch (Exception ex)
             {
                 Log.Error("CAS pre-warm: bundle load failed: " + ex);
-            }
-        }
-
-        /// <summary>
-        /// Size and write time of the bundle file, so a log tells WHICH build of cas_assets is installed.
-        /// A stale bundle is otherwise invisible: an old one with placeholder shaders renders smoke and
-        /// flares as opaque white blocks (see the bundle notes in the README).
-        /// </summary>
-        private static string DescribeBundleFile(string path)
-        {
-            try
-            {
-                FileInfo info = new FileInfo(path);
-                return (info.Length / (1024f * 1024f)).ToString("0.0") + " MB, " +
-                       info.LastWriteTime.ToString("yyyy-MM-dd HH:mm");
-            }
-            catch (Exception)
-            {
-                return "size unknown";
             }
         }
 

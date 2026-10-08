@@ -55,9 +55,6 @@ namespace CustomFireSupport
         /// <summary>Go-arounds used per controller, so one sortie cannot orbit for ever.</summary>
         private static readonly Dictionary<int, int> _goArounds = new Dictionary<int, int>();
 
-        /// <summary>Controllers still allowed to fire after using their go-arounds (one log line each).</summary>
-        private static readonly HashSet<int> _reportedForce = new HashSet<int>();
-
         private static readonly AccessTools.FieldRef<CASController, bool> LastKnownRef =
             AccessTools.FieldRefAccess<CASController, bool>("_targetIsLastKnownPosition");
 
@@ -177,7 +174,6 @@ namespace CustomFireSupport
         internal static void ResetForScene()
         {
             _goArounds.Clear();
-            _reportedForce.Clear();
             Departed.Clear();
             PendingDepartures.Clear();
         }
@@ -204,16 +200,20 @@ namespace CustomFireSupport
         }
 
         /// <summary>
-        /// The launch geometry of this moment: horizontal range to the target and the angle between the
-        /// aircraft's own nose and the target. `why` is null when the launch is inside the envelope.
+        /// The launch geometry of this moment: range to the target and the angle between the aircraft's
+        /// own nose and the target.
+        ///
+        /// AN AIR TARGET IS JUDGED ON ITS OWN FIGURES, IN THREE DIMENSIONS. The ground figures are
+        /// horizontal-range minima that assume the round has to climb over a target sitting on the ground;
+        /// an aircraft is hundreds of metres up, so the distance that matters is the SLANT range (a target
+        /// 2,000 m away and 400 m up is 2,040 m away, not 2,000 m, and directly overhead it is 400 m
+        /// "away" in horizontal terms, which is how a ground gate lets a shot go at a target the round
+        /// cannot possibly turn onto). profile.AirTargetMinimumRangeMeters and
+        /// profile.AirTargetMaxOffAxisDegrees are their own figures for exactly that reason; a GROUND
+        /// target still goes through the two horizontal tests below, unchanged.
         /// </summary>
-        internal static bool InLaunchEnvelope(CASController controller,
-            CasAirframeCatalog.MissileProfile profile, out float range, out float offAxis, out string why)
+        internal static bool InLaunchEnvelope(CASController controller, CasAirframeCatalog.MissileProfile profile)
         {
-            range = -1f;
-            offAxis = -1f;
-            why = null;
-
             Vector3 target;
             if (!TryGetTargetPosition(controller, out target))
             {
@@ -222,24 +222,34 @@ namespace CustomFireSupport
 
             Vector3 toTarget = target - controller.transform.position;
             Vector3 flat = new Vector3(toTarget.x, 0f, toTarget.z);
-            range = flat.magnitude;
-            offAxis = toTarget.sqrMagnitude > 0.01f ? Vector3.Angle(controller.transform.forward, toTarget) : 0f;
+            float range = flat.magnitude;
+            float offAxis = toTarget.sqrMagnitude > 0.01f ? Vector3.Angle(controller.transform.forward, toTarget) : 0f;
 
             if (profile == null)
             {
                 return true;
             }
 
+            if (controller != null && CasAirTargets.IsAirUnit(controller.FinalTarget))
+            {
+                range = toTarget.magnitude;   // SLANT range: the distance the round really has to fly
+                if (range < profile.AirTargetMinimumRangeMeters)
+                {
+                    return false;
+                }
+                if (offAxis > profile.AirTargetMaxOffAxisDegrees)
+                {
+                    return false;
+                }
+                return true;
+            }
+
             if (range < profile.MinimumLaunchRangeMeters)
             {
-                why = "the target is " + range.ToString("0") + " m away and this round needs at least " +
-                      profile.MinimumLaunchRangeMeters.ToString("0") + " m to be delivered";
                 return false;
             }
             if (offAxis > profile.MaxLaunchOffAxisDegrees)
             {
-                why = "the target is " + offAxis.ToString("0") + " deg off the aircraft's nose (limit " +
-                      profile.MaxLaunchOffAxisDegrees.ToString("0") + " deg)";
                 return false;
             }
             return true;
@@ -249,18 +259,12 @@ namespace CustomFireSupport
         /// True when the release about to happen should be held back, and books the go-around. Returns false
         /// once the sortie has used its go-arounds (the shot is then taken as it stands).
         /// </summary>
-        internal static bool ShouldGoAround(CASController controller, string why, float range)
+        internal static bool ShouldGoAround(CASController controller)
         {
             int used;
             _goArounds.TryGetValue(controller.GetInstanceID(), out used);
             if (used >= MaxGoArounds)
             {
-                if (_reportedForce.Add(controller.GetInstanceID()))
-                {
-                    Log.Warn("CAS missile attack: '" + controller.gameObject.name + "' has already gone " +
-                             "around " + used + " time(s) for this launch and still cannot get the range (" +
-                             why + "). Firing anyway - the round will have to turn hard after release.");
-                }
                 return false;
             }
 
@@ -323,10 +327,7 @@ namespace CustomFireSupport
                     return true;
                 }
 
-                float range;
-                float offAxis;
-                string why;
-                if (CasMissileAttackRun.InLaunchEnvelope(controller, profile, out range, out offAxis, out why))
+                if (CasMissileAttackRun.InLaunchEnvelope(controller, profile))
                 {
                     CasMissileAttackRun.NoteReleasedAfterGoAround(controller);
                     // FIRE AND LEAVE. With a fire-and-forget round the aircraft has nothing left to do here:
@@ -339,7 +340,7 @@ namespace CustomFireSupport
                     return true;
                 }
 
-                if (CasMissileAttackRun.ShouldGoAround(controller, why, range))
+                if (CasMissileAttackRun.ShouldGoAround(controller))
                 {
                     return false; // no release this pass
                 }

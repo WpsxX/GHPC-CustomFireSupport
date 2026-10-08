@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using GHPC.Weaponry.CAS;
 using GHPC.Vehicle;
 using UnityEngine;
 
@@ -121,8 +120,8 @@ namespace CustomFireSupport
         };
 
         // The Soviet GSh-30. The close band plays ONE recording that already contains the whole event:
-        // the sustained fire followed by its spin-down, merged offline at 85% / 15% of the burst (see
-        // GSh30BurstSeconds below). Because that single take covers the firing AND its ending, this gun
+        // the sustained fire followed by its spin-down, merged offline at 85% / 15% of the burst (140
+        // rounds at 3900 rpm = 2.15 s). Because that single take covers the firing AND its ending, this gun
         // needs no loop and no separate stop-tail - which is what makes "it keeps looping after firing"
         // structurally impossible rather than merely unlikely: no take of any gun repeats, so an emitter
         // that somehow outlives its owner can only finish its one recording and go quiet.
@@ -132,14 +131,6 @@ namespace CustomFireSupport
             Mid = OneShot("CFS GSh30 far"),
             Far = OneShot("CFS GSh30 far")
         };
-
-        /// <summary>
-        /// The merged GSh-30 take is cut to exactly one burst: 140 rounds at 3900 rpm = 2.15 s, of which
-        /// the sustained fire is the first 85% (1.8275 s) and the spin-down the last 15% (0.3225 s).
-        /// Kept here only so the number is documented next to the code that relies on it; nothing in the
-        /// runtime depends on the exact value, because the clip simply plays to its own end.
-        /// </summary>
-        private const float GSh30BurstSeconds = 140f / (3900f / 60f);   // = 2.1538 s
 
         private static AssetBundle _bundle;
         private static readonly Dictionary<string, AudioClip> _clips = new Dictionary<string, AudioClip>();

@@ -109,10 +109,8 @@ namespace CustomFireSupport
                     // is what keeps two Resources.FindObjectsOfTypeAll passes off every later scene load:
                     // a session opens half a dozen scenes, and each one used to rescan the whole game to
                     // find nothing. The renderer pass below is idempotent and still has to run once.
-                    int stillHidden = ApplyRendererPass();
+                    ApplyRendererPass();
                     _done = true;
-                    Log.Verbose("CAS material repair: skipped (nothing is left on a bundled approximation); " +
-                                stillHidden + " TVE helper renderer(s) disabled.");
                     return;
                 }
 
@@ -176,9 +174,6 @@ namespace CustomFireSupport
                 // scene may have the native material or shader loaded by then, so only while one of those
                 // is left does the next scene need to scan again.
                 _everythingResolved = approximated == 0 && unknown == 0;
-                Log.Info("CAS material repair: " + CasPrewarmer.BundleMaterials.Count + " dependency material(s), " +
-                    restored + " restored, " + recovered + " recovered by shader name, " + approximated +
-                    " fallback, " + unknown + " unresolved; " + hidden + " TVE helper renderer(s) disabled.");
                 if (missingShaders.Count > 0)
                     Log.Warn("CAS material repair: waiting for native shaders: " + string.Join(", ", missingShaders.ToArray()));
             }

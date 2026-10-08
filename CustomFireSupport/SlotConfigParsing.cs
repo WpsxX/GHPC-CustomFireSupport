@@ -555,16 +555,6 @@ namespace CustomFireSupport
             return munition.ToString();
         }
 
-        public static string ToConfigName(WeaponKind weapon)
-        {
-            return weapon == WeaponKind.Any ? "Any" : weapon.ToString();
-        }
-
-        public static string ToConfigName(FlyoverKind flyover)
-        {
-            return flyover.ToString();
-        }
-
         public static string ToConfigName(AttackKind attack)
         {
             switch (attack)

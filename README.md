@@ -14,7 +14,7 @@
 >   
 > Requires: MelonLoader 0.6.x + Harmony (bundled with MelonLoader)
 >   
-> Version: **v1.0.5**
+> Version: **v1.0.6**
 
 The mod puts **6 configurable slots** on the mission map's fire-support panel.
   
@@ -218,6 +218,11 @@ Values (comma-separated, multiple allowed; `Any` or empty = no filter, i.e. ever
 ---
 
 ## 6. Changelog
+
+### v1.0.6
+
+- Fixed bugs.
+- Removed the F-15.
 
 ### v1.0.5
 

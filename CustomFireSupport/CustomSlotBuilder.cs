@@ -18,22 +18,12 @@ namespace CustomFireSupport
         internal ArtilleryBattery Battery;
         internal IndirectFireWeaponType WeaponType;
 
-    /// <summary>Name of the projectile prefab this slot fires (null for codex shells).</summary>
-        internal string TemplatePrefabName;
-
         /// <summary>
         /// True when this slot's whole volley is fired on the frame of the call
         /// (<c>ImpactDelaySeconds &lt;= 0</c>). One definition of "instant", used by both the builder and
         /// the <c>SendFireMission</c> postfix that actually fires the volley.
         /// </summary>
         internal bool InstantVolley;
-
-        /// <summary>Baseline values copied from the vanilla battery the shell came from (for logging).</summary>
-        internal int VanillaShots;
-        internal float VanillaImpactDelay;
-        internal float VanillaInterShot;
-        internal float VanillaDispersion;
-        internal float VanillaCooldown;
     }
 
     /// <summary>A built CAS slot: the live airframe unit plus the config that produced it.</summary>
@@ -171,8 +161,7 @@ namespace CustomFireSupport
             BatteryMunitionsChoice choice = chosen.Choice;
             if (config.Munition == MunitionKind.AntiArmor)
             {
-                string cluster;
-                BatteryMunitionsChoice replacement = ClusterMunitionFactory.BuildChoice(playerFaction, chosen, out cluster);
+                BatteryMunitionsChoice replacement = ClusterMunitionFactory.BuildChoice(playerFaction, chosen);
                 if (replacement != null)
                 {
                     choice = replacement;
@@ -201,9 +190,6 @@ namespace CustomFireSupport
             float spawnHeight = source != null ? source.SpawnHeight : (profile != null ? profile.SpawnHeightMeters : 300f);
             float spawnAngle = source != null ? source.SpawnAngle : (profile != null ? profile.SpawnAngleDegrees : 60f);
             float heading = source != null ? source.FromHeading : (profile != null ? profile.FromHeadingDegrees : 90f);
-            if (profile != null)
-            {
-            }
 
             // ---- slot config: scale factors ----
             int shots = config.RoundsPerCall > 0 ? config.RoundsPerCall : vanillaShots;
@@ -226,12 +212,6 @@ namespace CustomFireSupport
 
             if (!instant && config.ImpactDelaySeconds > 0f && config.ImpactDelaySeconds < 1f)
             {
-                Log.Verbose("slot " + config.Index + ": ImpactDelaySeconds=" +
-                            config.ImpactDelaySeconds.ToString("0.##") +
-                            " only cancels the first-round delay; the " + interShot.ToString("0.##") +
-                            "s round spacing comes from InterShotDelaySeconds=" +
-                            config.InterShotDelaySeconds.ToString("0.##") + " alone (an impact scale below 1 " +
-                            "never shortens the interval).");
             }
 
             // The panel's cooldown bookkeeping must never reach 0 while the volley runs (CooldownManager
@@ -247,8 +227,6 @@ namespace CustomFireSupport
             if (choice.Ammo == null && choice.DefaultProjectile != null)
             {
                 spawnAngle = 90f;
-                Log.Verbose("slot " + config.Index + ": '" + chosen.AmmoName + "' is a projectile prefab (no live-round data); " +
-                            "dropping it straight down onto the called point.");
             }
 
             ArtilleryBattery battery = new ArtilleryBattery(
@@ -269,15 +247,7 @@ namespace CustomFireSupport
                 Config = config,
                 Battery = battery,
                 InstantVolley = instant,
-                TemplatePrefabName = chosen.Choice.DefaultProjectile == null
-                    ? null
-                    : chosen.Choice.DefaultProjectile.name,
-                WeaponType = FireSupportTemplates.ToGameWeapon(config.Weapon),
-                VanillaShots = vanillaShots,
-                VanillaImpactDelay = vanillaImpact,
-                VanillaInterShot = vanillaInterShot,
-                VanillaDispersion = vanillaDispersion,
-                VanillaCooldown = vanillaCooldown
+                WeaponType = FireSupportTemplates.ToGameWeapon(config.Weapon)
             };
         }
 
@@ -680,7 +650,7 @@ namespace CustomFireSupport
             //
             // Collapsing a single-type request to one entry instead (which CASHardpointManager
             // .SetUpHardpoints then replicates onto EVERY pylon) silently overrides the author's layout:
-            // it filled the F-15's deliberately empty centreline station (2 bombs became 3), and it turned
+            // it filled an author's deliberately empty centreline station (2 bombs became 3), and it turned
             // the A-10's two-bomb loadout into eleven. Both aircraft now fly the loadout they were authored
             // with.
             //
@@ -1174,7 +1144,7 @@ namespace CustomFireSupport
             // An air-to-ground missile slot draws between the side's DESIGNATED missile aircraft: the A-10
             // on Blue, the MiG-23BN and the Su-25 on Red. Nothing else may appear here - the missile is
             // synthesized at runtime, so CanDeliver() accepts every airframe, and the generic pools would
-            // otherwise hand a missile slot an F-4, an F-15 or a MiG-21.
+            // otherwise hand a missile slot an F-4, a MiG-21 or anything else.
             if (wantsMissile)
             {
                 CasTemplate missileAirframe = DrawMissileAirframe(scored, config, playerFaction);
@@ -1224,10 +1194,6 @@ namespace CustomFireSupport
             CasTemplate drawn = DrawDifferent(pool, previous) ?? pool[UnityEngine.Random.Range(0, pool.Count)];
             drawn = drawn ?? fallback;
 
-            Log.Verbose("slot " + config.Index + ": airframe draw from " + pool.Count + " candidate(s) -> '" +
-                        (drawn == null ? "?" : drawn.Name) + "'" +
-                        (previous != null ? " (previous call: '" + previous + "')" : string.Empty) +
-                        "; pool: " + DescribeDrawPool(pool));
             return drawn;
         }
 
@@ -1237,9 +1203,8 @@ namespace CustomFireSupport
         ///
         /// THE POOL IS DELIBERATELY NARROW. The missile is built at runtime by CasPayloadFactory, so
         /// CanDeliver(AirToGroundMissile) answers "yes" for EVERY airframe; drawing from the generic pools
-        /// would therefore let a missile slot send an F-4, an F-15, a MiG-21 or anything else. Restricting
-        /// the pool to the designated aircraft is what keeps the missile on the airframe that is supposed
-        /// to carry it.
+        /// would therefore let a missile slot send an F-4, a MiG-21 or anything else. Restricting the pool
+        /// to the designated aircraft is what keeps the missile on the airframe that is supposed to carry it.
         ///
         /// The draw avoids the model this slot flew last, so a side with more than one designated airframe
         /// alternates between them instead of one flying every sortie. Returns null when no designated
@@ -1251,10 +1216,10 @@ namespace CustomFireSupport
             AirframeSide side = playerFaction == Faction.Red ? AirframeSide.Pact : AirframeSide.Nato;
 
             // The pool is the designated aircraft flying THEIR OWN loadout. Without the own-loadout filter
-            // the draw also returns pairs like 'F15 + A-10 Mk82 focus' or 'F15 + F-104G Rockets', because
-            // every fitting same-side loadout of a designated airframe is a candidate - and there are five
-            // such pairs for two aircraft. The airframe is what the slot is choosing, so its own payload is
-            // what it must fly; the runtime missile replaces the weapons anyway.
+            // the draw also returns cross pairs like 'A10 + F-104G Rockets', because every fitting
+            // same-side loadout of a designated airframe is a candidate. The airframe is what the slot is
+            // choosing, so its own payload is what it must fly; the runtime missile replaces the weapons
+            // anyway.
             List<CasTemplate> pool = CollectMissileCandidates(scored, side, true);
             if (pool.Count == 0)
             {
@@ -1660,20 +1625,6 @@ namespace CustomFireSupport
                 }
             }
             return neutralOnMySide;
-        }
-
-        private static string DescribeDrawPool(List<CasTemplate> pool)
-        {
-            StringBuilder builder = new StringBuilder();
-            for (int i = 0; i < pool.Count; i++)
-            {
-                if (i > 0)
-                {
-                    builder.Append(", ");
-                }
-                builder.Append('\'').Append(pool[i].Name).Append("' + '").Append(pool[i].LoadoutName).Append('\'');
-            }
-            return builder.ToString();
         }
 
         /// <summary>Source tag CasDonorProvider gives the current mission's own airframes.</summary>

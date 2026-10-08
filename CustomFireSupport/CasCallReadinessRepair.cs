@@ -2,9 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using GHPC;
-using GHPC.UI;
-using GHPC.UI.Map;
-using GHPC.Weaponry;
+using GHPC.Utility;
+using GHPC.Vehicle;
 using GHPC.Weaponry.CAS;
 using GHPC.Weapons;
 using HarmonyLib;
@@ -37,7 +36,6 @@ namespace CustomFireSupport
     /// readiness gate with SendCasSupport's "yayFreePlane" parameter - the bypass also skips the game's
     /// mission bookkeeping, which is what made an earlier attempt at this break other things.
     ///
-    /// Everything is logged: one line per call, naming the state the game's gate will see.
     /// </summary>
     internal static class CasCallReadinessRepair
     {
@@ -46,30 +44,9 @@ namespace CustomFireSupport
         private static readonly AccessTools.FieldRef<CasAirframeUnit, float> CooldownRef =
             AccessTools.FieldRefAccess<CasAirframeUnit, float>("<RemainingCooldown>k__BackingField");
 
-        /// <summary>Invocations of MapController.TryCallCAS seen in the current frame, per map click.</summary>
-        private static int _tryCallCasThisFrame = -1;
-        private static int _lastFrame = -1;
-
         internal static void ResetForScene()
         {
-            _tryCallCasThisFrame = -1;
-            _lastFrame = -1;
-        }
-
-
-        /// <summary>
-        /// Counts this frame's TryCallCAS invocations. More than one means the click handler is subscribed
-        /// more than once, which is the double dispatch described in the class comment.
-        /// </summary>
-        internal static int NoteTryCallCas()
-        {
-            int frame = Time.frameCount;
-            if (frame != _lastFrame)
-            {
-                _lastFrame = frame;
-                _tryCallCasThisFrame = 0;
-            }
-            return ++_tryCallCasThisFrame;
+            SendCasSupportOutcomePatch.ResetForScene();
         }
 
         /// <summary>
@@ -126,90 +103,160 @@ namespace CustomFireSupport
         /// Reports what the game's readiness gate is about to see, and counts this frame's TryCallCAS
         /// invocations so a duplicate click dispatch is visible in the log instead of having to be
         /// inferred from the number of re-rolls.
+        ///
+        /// THE POSTFIX ALSO GIVES AN AIR CALL ITS TARGET. A map click against a helicopter supplies a
+        /// ground point only (MapController.cs:1390-1401 flattens it, CASController.SetInterestPoint does
+        /// it again at :903-908) and CheatTargetUnit is null on the player path, so the game's own
+        /// acquisition has to find the helicopter inside a 45 degree / 1000 m spot cone and out-score every
+        /// ground unit in it. For a sortie carrying an air-to-ground missile - the only sorties this mod
+        /// flies that can attack an aircraft at all, and the only ones CasMissileGuidance flies as an
+        /// anti-aircraft round - the aircraft can simply be TOLD, through the game's own field:
+        ///
+        ///     if (CheatTargetUnit != null &amp;&amp; !CheatTargetUnit.Neutralized) unit3 = CheatTargetUnit;
+        ///     (CASController.SearchForTarget :959-962)
+        ///
+        /// THE VISIBILITY GATE IS NOT OPTIONAL. The game honours that field with NO cone test and NO
+        /// visibility test of its own, so a value written here without one is an aircraft that attacks
+        /// through terrain, smoke and trees. The check is CasAirTargets.IsVisibleFrom - vanilla's own call
+        /// from CASController.SearchForTarget :934, replicated flag for flag - and it is taken from the
+        /// aircraft's position AT THIS MOMENT, which for a freshly summoned sortie is its deploy point.
+        /// That is why CasTargetSpreadPatch.Prefix re-decides the same question on every search
+        /// frame (from where the aircraft actually is by then) and CLEARS this field when the answer is no:
+        /// the field set here is provisional, and the search-time gate is the authority. A call the gate
+        /// refuses is not a failure - the aircraft simply acquires the target the game's own way, and if it
+        /// finds nothing the sortie is exactly the sortie it would have been.
         /// </summary>
         [HarmonyPatch(typeof(CasSupportManager), "SendCasSupport")]
         internal static class SendCasSupportOutcomePatch
         {
-            private static int _lastFrame = -1;
-            private static int _invocationsThisFrame;
+            /// <summary>The CASControllers that already existed when the call started, so the one the call
+            /// spawns can be told apart from every sortie already in the air.</summary>
+            private static readonly HashSet<int> KnownControllers = new HashSet<int>();
 
-            private static void Prefix(CasSupportManager __instance, Faction unitFaction, int casIndex)
+            internal static void ResetForScene()
+            {
+                KnownControllers.Clear();
+            }
+
+            /// <summary>
+            /// How near the clicked point an enemy aircraft has to be for a call to be aimed at it. The
+            /// same figure and the same three-dimensional measure as the search-time gate
+            /// (CasTargetSpreadPatch.AirSearchRadiusMeters), so the two halves of the feature agree on what
+            /// "the player clicked the helicopter" means.
+            /// </summary>
+            private const float AirSearchRadiusMeters = 800f;
+
+            private static void Prefix()
             {
                 try
                 {
-                    int frame = Time.frameCount;
-                    if (frame != _lastFrame)
-                    {
-                        _lastFrame = frame;
-                        _invocationsThisFrame = 0;
-                    }
-                    _invocationsThisFrame++;
-                    if (_invocationsThisFrame < 2)
-                    {
-                        return;
-                    }
-
-                    Log.Warn("CAS call: SendCasSupport was called " + _invocationsThisFrame +
-                             " times in one frame (one map click). Each call re-rolls the airframe and " +
-                             "consumes the airframe's readiness, so only one of them can actually send an " +
-                             "aircraft - " + CasCallReadinessRepair.DescribeGate(__instance, unitFaction, casIndex) + ".");
+                    SnapshotControllers();
                 }
                 catch (Exception ex)
                 {
-                    Log.Error("CAS call: reporting the duplicate sends failed: " + ex);
+                    Log.Error("CAS call: could not snapshot existing aircraft: " + ex);
                 }
             }
 
-            private static void Postfix(CasSupportManager __instance, Faction unitFaction, int casIndex,
+            private static void Postfix(CasSupportManager __instance, Vector3 supportPosition,
                 ref MapMissionResult __result)
             {
                 try
                 {
-                    string outcome = __result.IsSuccess
-                        ? "sent " + (__result.SupportInfo == null ? "(no airframe reported)" : __result.SupportInfo.ToString())
-                        : "REFUSED (no aircraft)";
-                    Log.Info("CAS call outcome: " + outcome + "; " +
-                             CasCallReadinessRepair.DescribeGate(__instance, unitFaction, casIndex) + ".");
+                    if (__result.IsSuccess)
+                    {
+                        GiveAirTargetToSpawnedSortie(__instance, supportPosition);
+                    }
                 }
                 catch (Exception ex)
                 {
-                    Log.Error("CAS call: reporting the outcome failed: " + ex);
+                    Log.Error("CAS call: could not assign an air target: " + ex);
                 }
             }
-        }
 
-        /// <summary>The state the game's own readiness gate looks at, for one SendCasSupport call.</summary>
-        internal static string DescribeGate(CasSupportManager manager, Faction faction, int casIndex)
-        {
-            try
+            private static void SnapshotControllers()
             {
-                CasAirframeUnit[] array = manager == null
-                    ? null
-                    : (faction == Faction.Blue ? manager.BlueCasAirframes : manager.RedCasAirframes);
-                if (array == null)
+                KnownControllers.Clear();
+                CASController[] planes = UnityEngine.Object.FindObjectsOfType<CASController>();
+                for (int i = 0; i < planes.Length; i++)
                 {
-                    return "the " + faction + " airframe array is null";
+                    if (planes[i] != null)
+                    {
+                        KnownControllers.Add(planes[i].GetInstanceID());
+                    }
                 }
-                if (casIndex < 0 || casIndex >= array.Length)
+            }
+
+            /// <summary>
+            /// Hands the aircraft this call just spawned the enemy aircraft nearest the clicked point, if
+            /// there is one AND the aircraft can see it right now. Everything is behind the ownership and
+            /// capability test (CasAirTargets.IsOurMissileSortie), so no other call - vanilla, campaign,
+            /// scripted, or any of the mod's bomb / rocket / gun slots - can be affected.
+            /// </summary>
+            private static void GiveAirTargetToSpawnedSortie(CasSupportManager manager, Vector3 supportPosition)
+            {
+                CASController spawned = FindSpawnedController(manager);
+                if (spawned == null)
                 {
-                    return "index " + casIndex + " is outside the " + faction + " array (" + array.Length + " entries)";
+                    return;
+                }
+                if (!CasAirTargets.IsOurMissileSortie(spawned))
+                {
+                    return; // not one of our air-to-ground-missile sorties: nothing to do.
+                }
+                if (spawned.CheatTargetUnit != null)
+                {
+                    return; // the game (a scripted call) already named a target: never overwrite it.
                 }
 
-                CasAirframeUnit unit = array[casIndex];
-                if (unit == null)
+                Vector3 point = new Vector3(supportPosition.x, 0f, supportPosition.z);
+                // The clicked point is flattened to the terrain height the game itself used, so the 3-D
+                // distance below is measured from the ground the player clicked on.
+                bool flag;
+                point.y = CodeUtils.GetTerrainHeightAtPosition(point, out flag, 2000f);
+
+                Unit air = FireSupportPatches.CasTargetSpreadPatch.FindNearbyEnemyAir(
+                    spawned, point, AirSearchRadiusMeters);
+                if (air == null)
                 {
-                    return "index " + casIndex + " holds no airframe";
+                    return;
                 }
-                int missions = MissionsRef == null ? -1 : MissionsRef(unit);
-                float cooldown = CooldownRef == null ? -1f : CooldownRef(unit);
-                return "index " + casIndex + " '" + (unit.airframePrefab == null ? "?" : unit.airframePrefab.name) +
-                       "': sorties=" + missions + ", cooldown=" + cooldown.ToString("0.#") + "s, IsReady=" +
-                       unit.IsReady;
+
+                if (!CasAirTargets.CanDeliverAirToGroundMissile(spawned))
+                {
+                    return;
+                }
+
+                if (!CasAirTargets.IsVisibleFrom(spawned, air))
+                {
+                    return;
+                }
+
+                spawned.CheatTargetUnit = air;
             }
-            catch (Exception ex)
+
+            /// <summary>
+            /// The controller this SendCasSupport call created: the one that was not in the air when the
+            /// call started and that belongs to the manager that just sent it.
+            /// </summary>
+            private static CASController FindSpawnedController(CasSupportManager manager)
             {
-                return "the readiness state could not be read (" + ex.GetType().Name + ")";
+                CASController[] planes = UnityEngine.Object.FindObjectsOfType<CASController>();
+                for (int i = 0; i < planes.Length; i++)
+                {
+                    CASController plane = planes[i];
+                    if (plane == null || KnownControllers.Contains(plane.GetInstanceID()))
+                    {
+                        continue;
+                    }
+                    if (plane.casManager == manager)
+                    {
+                        return plane;
+                    }
+                }
+                return null;
             }
+
         }
     }
 }

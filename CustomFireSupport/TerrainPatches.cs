@@ -86,9 +86,6 @@ namespace CustomFireSupport
             }
 
             SaveDataListField.SetValue(__instance, saved);
-            Log.Info("terrain snapshot: saved " + saved.Count + " terrain(s) without their detail layers; " +
-                     unusable + " of them report detail prototypes but no detail data, which is the state " +
-                     "TerrainData.GetDetailLayer crashes the process on.");
             return false;
         }
 

@@ -205,15 +205,13 @@ namespace CustomFireSupport
         /// <summary>Every AmmoType this factory built, so the rest of the mod can recognise its own.</summary>
         private static readonly List<AmmoType> _ourAmmo = new List<AmmoType>();
 
-        /// <summary>Per-faction launch description (at most two entries - reference compared).</summary>
+        /// <summary>Per-faction launch data (at most two entries - reference compared).</summary>
         private static readonly List<ClusterLaunch> _launches = new List<ClusterLaunch>();
 
         /// <summary>The 20 mm HE round the mission has loaded, if any (searched once per session).</summary>
         private static AmmoCodexScriptable _twentyMillimetre;
         private static bool _twentyMillimetreSearched;
-        private static string _twentyMillimetreSource = "(none loaded)";
 
-        private static bool _warnedNoTwentyMillimetre;
 
         // ------------------------------------------------------------------
         // Public API used by the slot builder / the runtime patches
@@ -227,10 +225,8 @@ namespace CustomFireSupport
         /// the visual / flight donor of the cargo round, and it is a fallback effect donor when the
         /// mission has no 20 mm HE round loaded.
         /// </summary>
-        internal static BatteryMunitionsChoice BuildChoice(Faction playerFaction, AmmoTemplate template,
-            out string description)
+        internal static BatteryMunitionsChoice BuildChoice(Faction playerFaction, AmmoTemplate template)
         {
-            description = null;
             if (template == null || template.Choice == null || template.Choice.Ammo == null ||
                 template.Choice.Ammo.AmmoType == null)
             {
@@ -246,7 +242,6 @@ namespace CustomFireSupport
                 return null;
             }
 
-            description = launch.Describe();
             return new BatteryMunitionsChoice
             {
                 // The battery has to keep answering "yes" to this side's ANTI-ARMOUR queries (the map
@@ -336,14 +331,6 @@ namespace CustomFireSupport
             };
             _launches.Add(launch);
 
-            Log.Info("cluster munition ready for " + faction + ": " + launch.Describe() +
-                     "; 20 mm HE effect + sound taken from " + _twentyMillimetreSource + "; each submunition is a " +
-                     "HEAT-type round (" + HedpTntKilograms.ToString("0.###") + " kg TNTe, " +
-                     HedpFragmentCount + " visible fragments on detonation, frag cloud x" +
-                     HedpMicroFragScaling.ToString("0.#") + " = about " +
-                     (20f * HedpMicroFragScaling).ToString("0") + " m, so a ground hit still cuts down infantry); " +
-                     "fired by the slot's anti-armour artillery battery, steered to the burst point and opened there " +
-                     "(the vanilla anti-armour shell '" + donor.AmmoType.Name + "' is its visual and flight donor).");
             return launch;
         }
 
@@ -602,25 +589,6 @@ namespace CustomFireSupport
             }
 
             _twentyMillimetre = best;
-            if (best != null)
-            {
-                _twentyMillimetreSource = "'" + best.AmmoType.Name + "' (impact audio " +
-                                          best.AmmoType.ImpactAudio + ", effect " +
-                                          best.AmmoType.ImpactEffectDescriptor + ", cached index " +
-                                          best.AmmoType.CachedIndex + ")";
-            }
-            else
-            {
-                _twentyMillimetreSource = "the built-in 20 mm HE descriptor (this mission loaded no 20 mm round)";
-                if (!_warnedNoTwentyMillimetre)
-                {
-                    _warnedNoTwentyMillimetre = true;
-                    Log.Info("cluster munition: this mission has no 20 mm round loaded, so the airburst and the " +
-                             "HEDP impacts use the hand-written 20 mm HE impact-effect descriptor " +
-                             "(HighExplosive / Autocannon / Small) and the game's autocannon explosion sound; " +
-                             "ParticleEffectsManager resolves and caches it on the first hit.");
-                }
-            }
             return best;
         }
 

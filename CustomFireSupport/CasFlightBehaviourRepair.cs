@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Reflection;
 using GHPC.Vehicle;
 using HarmonyLib;
 using UnityEngine;
@@ -129,7 +128,6 @@ namespace CustomFireSupport
                         return;   // already set for this aircraft
                     }
 
-                    float before = PassesRef(__instance);
                     PassesRef(__instance) = 1f;
                 }
                 catch (Exception ex)

@@ -1,5 +1,3 @@
-using System.Text;
-
 namespace CustomFireSupport
 {
     /// <summary>
@@ -126,67 +124,6 @@ namespace CustomFireSupport
         public bool IsCas
         {
             get { return SlotConfigParsing.IsCasSlot(Kind); }
-        }
-
-        /// <summary>One-line summary for the startup log.</summary>
-        public string Describe()
-        {
-            StringBuilder builder = new StringBuilder();
-            builder.Append("slot ").Append(Index).Append(": ");
-            builder.Append(SlotConfigParsing.ToConfigName(Kind));
-            builder.Append(" \"").Append(string.IsNullOrEmpty(DisplayName) ? "(no name)" : DisplayName).Append("\"");
-            builder.Append(" missions=").Append(Missions < 0 ? "infinite" : Missions.ToString());
-
-            if (IsCas)
-            {
-                builder.Append(" flyover=").Append(SlotConfigParsing.ToConfigName(Flyover));
-                builder.Append(" attacks=").Append(DescribeAttacks());
-                builder.Append(" cooldown=").Append(DescribeScale(CooldownSeconds, "x"));
-                builder.Append(" airframe=auto(").Append(FlyoverWasExplicit ? "cfg flyover" : "auto flyover").Append(')');
-            }
-            else
-            {
-                builder.Append(" rounds=").Append(RoundsPerCall < 1 ? "vanilla" : RoundsPerCall.ToString());
-                builder.Append(" munition=").Append(SlotConfigParsing.ToConfigName(Munition));
-                builder.Append(" weapon=").Append(SlotConfigParsing.ToConfigName(Weapon));
-                builder.Append(" impact=").Append(DescribeScale(ImpactDelaySeconds, "x"));
-                builder.Append(" interval=").Append(DescribeScale(InterShotDelaySeconds, "x"));
-                builder.Append(" dispersion=").Append(DescribeScale(DispersionMeters, "x"));
-                builder.Append(" cooldown=").Append(DescribeScale(CooldownSeconds, "x"));
-                if (!string.IsNullOrEmpty(AmmoNameFilter))
-                {
-                    builder.Append(" ammo~").Append(AmmoNameFilter);
-                }
-            }
-            return builder.ToString();
-        }
-
-        private static string DescribeScale(float scale, string unit)
-        {
-            if (scale <= 0f)
-            {
-                return unit == "x" ? "0 (off)" : "none";
-            }
-            return scale.ToString("0.##") + unit;
-        }
-
-        private string DescribeAttacks()
-        {
-            if (AttackTypes == null || AttackTypes.Length == 0)
-            {
-                return "Any";
-            }
-
-            StringBuilder builder = new StringBuilder();
-            for (int i = 0; i < AttackTypes.Length; i++)
-            {
-                if (i > 0)
-                {
-                    builder.Append('+');
-                }
-                builder.Append(SlotConfigParsing.ToConfigName(AttackTypes[i]));
-            }
-            return builder.ToString();
         }
     }
 }

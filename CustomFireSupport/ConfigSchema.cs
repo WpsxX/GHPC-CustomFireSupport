@@ -48,9 +48,6 @@ namespace CustomFireSupport
             {
                 Log.Warn("no [CustomFireSupport] keys found in " + CfgFile.Path + " - code defaults are used.");
             }
-            else
-            {
-            }
         }
 
         // ------------------------------------------------------------------

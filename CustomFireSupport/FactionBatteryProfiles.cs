@@ -22,14 +22,6 @@ namespace CustomFireSupport
         internal float SpawnHeightMeters = 300f;
         internal float SpawnAngleDegrees = 60f;
         internal float FromHeadingDegrees = 90f;
-
-        internal string Describe()
-        {
-            return Shots + " rounds, " + DispersionMeters.ToString("0") + " m dispersion, " +
-                   InterShotSeconds.ToString("0.##") + " s interval, " + SpawnHeightMeters.ToString("0") +
-                   " m @ " + SpawnAngleDegrees.ToString("0") + " deg, heading " +
-                   FromHeadingDegrees.ToString("0") + " (battery '" + SourceName + "')";
-        }
     }
 
     /// <summary>
@@ -59,11 +51,6 @@ namespace CustomFireSupport
                 return profile;
             }
             return null;
-        }
-
-        internal static int Count
-        {
-            get { return _bySide.Count; }
         }
     }
 }

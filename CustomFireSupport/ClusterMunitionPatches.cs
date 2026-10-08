@@ -1,5 +1,4 @@
 using System;
-using GHPC;
 using GHPC.PhysicsHelpers;
 using GHPC.Weaponry.Artillery;
 using GHPC.Weapons;

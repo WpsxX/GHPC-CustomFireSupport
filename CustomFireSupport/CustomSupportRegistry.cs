@@ -208,8 +208,6 @@ namespace CustomFireSupport
                 InjectAirframes();
                 _pendingButtons = true;
 
-                Log.Info("built " + _built.Count + " custom slot(s); vanilla buttons " +
-                         (_hideVanillaThisMission ? "hidden" : "kept") + " (vanilla batteries are untouched either way).");
             }
             catch (Exception ex)
             {
@@ -330,9 +328,6 @@ namespace CustomFireSupport
                 combined[i] = existing[i];
             }
 
-            Log.Info("CAS injection: " + taken + " custom airframe(s) placed at index 0.." + (taken - 1) +
-                     " of " + combined.Length + " (the mission's own airframes follow at their original indices" +
-                     (vanilla > taken ? "" : "; " + (taken - vanilla) + " of them were displaced") + ").");
 
             if (red)
             {
@@ -471,7 +466,6 @@ namespace CustomFireSupport
                     return;
                 }
 
-                MapControlFlag prefabDefault = control.MapControlType;
                 MapControlFlag flag = FireSupportTemplates.ToMapControlFlag(slot.Config.Kind);
                 control.MapControlType = flag;
                 control.SupportName = string.IsNullOrEmpty(slot.DisplayName) ? slot.Config.DisplayName : slot.DisplayName;
@@ -1048,7 +1042,6 @@ namespace CustomFireSupport
             {
                 GameObject host = new GameObject("CustomFireSupport_FireMissionManager");
                 manager = host.AddComponent<FireMissionManager>();
-                Log.Info("this mission has no FireMissionManager; created one so custom artillery can be called.");
             }
 
             if (mapController != null && MapFireManagerRef(mapController) == null)
@@ -1076,8 +1069,6 @@ namespace CustomFireSupport
 
                 _createdCasManager = true;
                 _casDeployPlaced = PlaceDeployPoints(manager);
-                Log.Info("this mission has no CasSupportManager; created one so custom CAS slots can be called" +
-                         (_casDeployPlaced ? string.Empty : " (deploy point pending: the player unit is not spawned yet)") + ".");
             }
 
             if (mapController != null && MapCasManagerRef(mapController) == null)

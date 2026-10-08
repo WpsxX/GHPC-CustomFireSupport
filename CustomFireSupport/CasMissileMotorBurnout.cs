@@ -91,16 +91,12 @@ namespace CustomFireSupport
                 if (!_motorOut && _age >= _burnSeconds)
                 {
                     _motorOut = true;
-                    int count = SetFlamesOff(null);
-                    string trail = StopMotorParticles();
-                    int lights = SetLightsOff();
-                    int audio = StopAudio();
+                    SetFlamesOff(null);
+                    StopMotorParticles();
+                    SetLightsOff();
+                    StopAudio();
                     // These custom visuals are destroyed rather than pooled. All timed work is done.
                     enabled = false;
-                    Log.Info("CAS missile motor: burnout after " + _burnSeconds.ToString("0.#") +
-                             " s of flight - " + count + " flame object(s) off, " + trail +
-                             ", " + audio + " engine audio source(s) off, " + lights +
-                             " light(s) off; nothing is left trailing behind the missile for the rest of the flight.");
                 }
             }
             catch (Exception ex)

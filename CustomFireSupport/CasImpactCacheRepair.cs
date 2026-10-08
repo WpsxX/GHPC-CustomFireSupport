@@ -87,13 +87,78 @@ namespace CustomFireSupport
         private static readonly ConditionalWeakTable<ImpactDecalsDatabaseScriptable, DecalTable> Decals =
             new ConditionalWeakTable<ImpactDecalsDatabaseScriptable, DecalTable>();
 
-        /// <summary>Ammo names already explained in the log (one line each per session).</summary>
-        private static readonly HashSet<string> Reported = new HashSet<string>(StringComparer.Ordinal);
-
         private static bool Owns(AmmoType ammo)
         {
             return ammo != null && (CasPrewarmer.IsBundledAmmo(ammo) || CasPayloadFactory.IsOurRound(ammo) ||
                 CasPayloadFactory.IsOurMissile(ammo));
+        }
+
+        // ------------------------------------------------------------------
+        // Pre-warm repair: a ROCKET with no impact decal switched on
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// Turns an impact decal ON for a bundled ROCKET whose asset says it has none, once, at pre-warm.
+        ///
+        /// WHY THIS IS NEEDED. The shipped <c>ammo_FFAR_10lb</c> - the round the mod's Lau 32 (FFAR) pods
+        /// fire - carries <c>HasImpactDecal = 0</c>. That flag is read FIRST by the game's own matcher
+        /// (<c>ImpactDecalsManager.GetBestImpactDecalMatch</c>, which returns null on it before any database
+        /// search), so no amount of searching finds a mark for that round and it can never stamp one on any
+        /// surface. Every other rocket the mod ships - the S-5K (UB16 / UB32 / MARS-2) and the S-8K (B8) -
+        /// already carries <c>HasImpactDecal = 1</c> and craters normally, and the FFAR's descriptor is
+        /// otherwise IDENTICAL to the S-5K's (DecalCategory HEAT, DecalType Dent, DecalImpactAngle High,
+        /// Flags 4, MinFilterStrictness Low), so the one flag is the whole difference.
+        ///
+        /// WHY THE DESCRIPTOR IS REWRITTEN RATHER THAN THE LOOKUP PATCHED. This file's two Harmony patches
+        /// only change HOW an entry is found; they cannot invent one. The FFAR's own request never reaches
+        /// the database, so clearing the flag on the descriptor is the only place the decision can be
+        /// changed - and it is a plain struct field on the mod's own bundled asset, reached here as a local
+        /// copy and written straight back.
+        ///
+        /// GUARDED ON EffectSize == Rocket, deliberately. Bullet and autocannon rounds are refused the Dirt
+        /// crater by the game itself (<c>CreateImpactDecalOfType</c> returns early for those sizes), and the
+        /// bombs and missiles are already correctly described - clearing their flag would be a change with
+        /// no purpose. Only a rocket that has the flag CLEARED is touched, so the S-5K, the S-8K and the
+        /// Hydra (all already set) return false here and are not even written.
+        ///
+        /// NOTHING ELSE IS TOUCHED: <c>DecalCategory</c>, <c>DecalType</c>, <c>DecalImpactAngle</c>,
+        /// <c>Flags</c>, <c>MinFilterStrictness</c> and <c>CachedIndex</c> keep the asset's own values, so
+        /// the round resolves through this file's existing direct-decal path to exactly the entry the S-5K
+        /// gets. The ammo is also deliberately NOT added to <c>_ourRounds</c> and no
+        /// <c>CachedDecalAmmo</c>-style EffectSize-raising clone is involved - that clone exists because a
+        /// GUN round's own descriptor has to keep its EffectSize for its explosion lookups, and applying it
+        /// to a rocket would change which effect the FFAR's detonation resolves to.
+        ///
+        /// ORDERING IS LOAD-BEARING. This runs from the bundle's hardpoint ammo scan, i.e. at pre-warm and
+        /// before any shot is fired. <see cref="DecalLookup"/> memoizes a null result for a combination -
+        /// including this round's Dirt key - so a repair applied after the first impact would be answered
+        /// from that memo and silently ignored for the rest of the session.
+        /// </summary>
+        /// <returns>true when the descriptor was rewritten.</returns>
+        internal static bool RepairRocketImpactDecal(AmmoType ammo)
+        {
+            if (ammo == null)
+            {
+                return false;
+            }
+
+            if (ammo.ImpactEffectDescriptor.EffectSize != ParticleEffectsManager.EffectSize.Rocket)
+            {
+                return false;
+            }
+
+            if (ammo.ImpactDecalDescriptor.HasImpactDecal)
+            {
+                return false;
+            }
+
+            // The descriptor is a struct on the ammo asset: read it, set the flag on the copy, write the
+            // whole descriptor back.
+            ImpactDecalsManager.ImpactDecalDescriptor descriptor = ammo.ImpactDecalDescriptor;
+            descriptor.HasImpactDecal = true;
+            ammo.ImpactDecalDescriptor = descriptor;
+
+            return true;
         }
 
         /// <summary>
@@ -135,7 +200,6 @@ namespace CustomFireSupport
                 {
                     prefab = ResolveEffect(__instance, ammoType, fusedStatus, surfaceMaterial, isRicochet);
                     __result = prefab != null;
-                    Note(ammoType, indexPresent, prefab);
                     return false; // the exported index must never be dereferenced.
                 }
                 catch (Exception ex)
@@ -185,23 +249,6 @@ namespace CustomFireSupport
                 return resolved;
             }
 
-            /// <summary>One line per ammo, so a log proves which rounds were resolved and how.</summary>
-            private static void Note(AmmoType ammoType, bool exportedIndexExisted, ImpactEffectDataScriptable prefab)
-            {
-                if (!Reported.Add(ammoType.Name))
-                {
-                    return;
-                }
-
-                string reason = exportedIndexExisted
-                    ? "exported cache index " + ammoType.CachedIndex + " belongs to the export's database and " +
-                      "does not describe this round here"
-                    : "exported cache index " + ammoType.CachedIndex + " does not exist in this session's table";
-                Log.Info("CAS impact lookup: '" + ammoType.Name + "': " + reason + "; resolved " +
-                         (prefab == null
-                             ? "no effect (this round's effect descriptor matches nothing in this database)"
-                             : "effect '" + prefab.name + "' directly instead of indexing the shared table") + ".");
-            }
         }
 
         [HarmonyPatch(typeof(ImpactDecalsDatabaseScriptable), "TryGetCachedImpactDecalData")]
@@ -278,6 +325,7 @@ namespace CustomFireSupport
                 perAmmo.Add(key, resolved);
                 return resolved;
             }
+
         }
     }
 }

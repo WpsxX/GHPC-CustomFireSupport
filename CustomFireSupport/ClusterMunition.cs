@@ -54,13 +54,6 @@ namespace CustomFireSupport
         /// <summary>Height of the airburst above the called impact point, in metres.</summary>
         internal float BurstHeightMeters = ClusterMunition.BurstHeightMeters;
 
-        internal string Describe()
-        {
-            // SubmunitionName already carries the HEDP designation ("M864 HEDP"), so it is not repeated.
-            return Spec.ShellName + " (" + Spec.CaliberMillimeters.ToString("0") + " mm, " +
-                   Spec.Submunitions + " x " + Spec.SubmunitionName + ", airburst " +
-                   BurstHeightMeters.ToString("0") + " m above the target)";
-        }
     }
 
     /// <summary>
@@ -114,8 +107,6 @@ namespace CustomFireSupport
         internal AmmoCodexScriptable Submunition;
         internal AmmoType BurstEffect;
         internal float CarrierSpeed = CarrierSpeedMetersPerSecond;
-        internal string ShellName = string.Empty;
-        internal string SubmunitionName = string.Empty;
 
         /// <summary>Number of times this object has opened during its current lifetime.</summary>
         internal int Bursts;
@@ -135,8 +126,6 @@ namespace CustomFireSupport
             Submunition = launch.Submunition;
             BurstEffect = launch.BurstEffect;
             CarrierSpeed = launch.CarrierSpeed > 0f ? launch.CarrierSpeed : CarrierSpeedMetersPerSecond;
-            ShellName = launch.Spec != null ? launch.Spec.ShellName : string.Empty;
-            SubmunitionName = launch.Spec != null ? launch.Spec.SubmunitionName : string.Empty;
         }
 
         internal void Disarm()

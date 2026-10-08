@@ -1,8 +1,5 @@
 using System;
-using System.Collections.Generic;
-using System.Text;
 using GHPC.Vehicle;
-using GHPC.Weapons;
 using HarmonyLib;
 using UnityEngine;
 
@@ -199,16 +196,8 @@ namespace CustomFireSupport
                     CASAttackType replacement = __result;
                     if (!TryPickFireableType(manager, __result, out replacement))
                     {
-                        Log.Warn("CAS fire chain: the game picked " + __result + " for this sortie but the " +
-                                 "loadout cannot fire it, and no other attack type is fireable either " +
-                                 "(" + DescribeMounted(manager) + "). The pass will be flown dry.");
                         return;
                     }
-
-                    Log.Warn("CAS fire chain: the game picked " + __result + " for this sortie, which the " +
-                             "loadout cannot fire (that is the silent dry pass - the game reads the missing " +
-                             "attack entry without a null check). Firing " + replacement + " instead; " +
-                             DescribeMounted(manager) + ".");
                     __result = replacement;
                 }
                 catch (Exception ex)
@@ -252,118 +241,6 @@ namespace CustomFireSupport
                 return found;
             }
 
-            private static string DescribeMounted(CASHardpointManager manager)
-            {
-                CASHardpoint[] points = manager.GetComponentsInChildren<CASHardpoint>(true);
-                StringBuilder builder = new StringBuilder("mounted: ");
-                bool any = false;
-                for (int i = 0; i < points.Length; i++)
-                {
-                    if (points[i] == null) continue;
-                    if (any) builder.Append(", ");
-                    builder.Append(points[i].Type).Append('=').Append(points[i].TotalMunitionsRemaining);
-                    any = true;
-                }
-                if (!any) builder.Append("(none)");
-                return builder.ToString();
-            }
-        }
-
-        /// <summary>
-        /// Prefix on CASHardpointManager.Fire(CASAttackType): says WHY an attack is about to be refused.
-        ///
-        /// The game's own reasons are Debug.Log lines, which never reach the player's log, so "the plane
-        /// came and dropped nothing" has been undiagnosable. This only reports; it changes no decision.
-        ///
-        /// The overload is named explicitly: the manager also has Fire(CASAttackMeta), and patching "Fire"
-        /// by name alone would be ambiguous.
-        /// </summary>
-        [HarmonyPatch(typeof(CASHardpointManager), "Fire", new[] { typeof(CASAttackType) })]
-        internal static class CasFireRefusalLogPatch
-        {
-            private static readonly AccessTools.FieldRef<CASHardpointManager, bool> BusyRef =
-                AccessTools.FieldRefAccess<CASHardpointManager, bool>("_busyFiring");
-            private static readonly AccessTools.FieldRef<CASHardpointManager, List<CASAttackMeta>> AttacksRef =
-                AccessTools.FieldRefAccess<CASHardpointManager, List<CASAttackMeta>>("_attacks");
-
-            /// <summary>One line per (sortie, attack type): a refusal is a state, not a per-round event.</summary>
-            private static readonly HashSet<string> Reported = new HashSet<string>(StringComparer.Ordinal);
-
-            internal static void ResetForScene()
-            {
-                Reported.Clear();
-            }
-
-            private static void Prefix(CASHardpointManager __instance, CASAttackType type)
-            {
-                try
-                {
-                    if (__instance == null)
-                    {
-                        return;
-                    }
-                    CASController controller = __instance.GetComponentInParent<CASController>();
-                    if (!IsOurSortie(controller))
-                    {
-                        return;
-                    }
-
-                    string key = __instance.GetInstanceID() + "/" + type;
-                    bool busy = BusyRef != null && BusyRef(__instance);
-                    bool can = __instance.CanDoAttackType(type);
-                    if (can && !busy)
-                    {
-                        Reported.Remove(key);
-                        return; // this attack will fire; nothing to explain.
-                    }
-                    if (!Reported.Add(key))
-                    {
-                        return;
-                    }
-
-                    string reason = busy
-                        ? "_busyFiring is still true, so the game treats this manager as mid-burst and " +
-                          "refuses every further attack on it (a vanilla burst that was interrupted - the " +
-                          "aircraft leaving is enough - never clears the flag)"
-                        : "CanDoAttackType(" + type + ") is false: no non-empty pylon of that type is mounted";
-                    Log.Warn("CAS fire chain: refusing " + type + " on '" + __instance.gameObject.name +
-                             "' - " + reason + ". " + DescribePylons(__instance) + ".");
-
-                    if (!busy)
-                    {
-                        Log.Warn("CAS fire chain: this sortie is carrying " + DescribeAttackEntries(__instance) +
-                                 ", so the game can only fire what its pylons deliver. If the requested slot " +
-                                 "type is missing here, the loadout that was mounted does not match the slot.");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Log.Error("CAS fire chain refusal log failed: " + ex);
-                }
-            }
-
-            private static string DescribePylons(CASHardpointManager manager)
-            {
-                CASHardpoint[] points = manager.GetComponentsInChildren<CASHardpoint>(true);
-                StringBuilder builder = new StringBuilder("pylons: ");
-                bool any = false;
-                for (int i = 0; i < points.Length; i++)
-                {
-                    if (points[i] == null) continue;
-                    if (any) builder.Append(", ");
-                    builder.Append(points[i].Type).Append('=').Append(points[i].TotalMunitionsRemaining)
-                           .Append('/').Append(points[i].TotalMunitionsCapacity);
-                    any = true;
-                }
-                if (!any) builder.Append("(none instantiated)");
-                return builder.ToString();
-            }
-
-            private static string DescribeAttackEntries(CASHardpointManager manager)
-            {
-                List<CASAttackMeta> attacks = AttacksRef == null || manager == null ? null : AttacksRef(manager);
-                return "attack entries " + (attacks == null ? "(none)" : attacks.Count.ToString());
-            }
         }
     }
 }
