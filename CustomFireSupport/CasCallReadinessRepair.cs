@@ -62,10 +62,9 @@ namespace CustomFireSupport
         ///
         /// Only the mod's own airframes are touched, and only towards what the slot's config already says.
         /// </summary>
-        internal static bool EnsureReadyForCall(CasAirframeUnit airframe, int slotIndex, int configuredMissions,
-            float configuredCooldownSeconds, out string reason)
+        internal static bool EnsureReadyForCall(CasAirframeUnit airframe, int configuredMissions,
+            float configuredCooldownSeconds)
         {
-            reason = null;
             if (airframe == null)
             {
                 return false;
@@ -81,8 +80,6 @@ namespace CustomFireSupport
             int wanted = configuredMissions < 0 ? CustomSlotBuilder.InfiniteMissionsDisplay : configuredMissions;
             float wantedCooldown = configuredCooldownSeconds <= 0f ? 0f : configuredCooldownSeconds;
 
-            reason = "the airframe reported sorties=" + missions + ", cooldown=" + cooldown.ToString("0.#") +
-                     "s, so the game's IsReady gate would refuse the call and no aircraft would be sent";
             if (MissionsRef != null && missions <= 0)
             {
                 MissionsRef(airframe) = wanted;
@@ -92,18 +89,11 @@ namespace CustomFireSupport
                 CooldownRef(airframe) = wantedCooldown;
             }
 
-            Log.Warn("CAS call: slot " + slotIndex + ": " + reason + ". Restored it to sorties=" + wanted +
-                     ", cooldown=" + wantedCooldown.ToString("0.#") + "s (what the slot is configured for) " +
-                     "instead of bypassing the gate, so the game's own mission bookkeeping stays intact.");
             return true;
         }
 
 
         /// <summary>
-        /// Reports what the game's readiness gate is about to see, and counts this frame's TryCallCAS
-        /// invocations so a duplicate click dispatch is visible in the log instead of having to be
-        /// inferred from the number of re-rolls.
-        ///
         /// THE POSTFIX ALSO GIVES AN AIR CALL ITS TARGET. A map click against a helicopter supplies a
         /// ground point only (MapController.cs:1390-1401 flattens it, CASController.SetInterestPoint does
         /// it again at :903-908) and CheatTargetUnit is null on the player path, so the game's own
@@ -152,9 +142,8 @@ namespace CustomFireSupport
                 {
                     SnapshotControllers();
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("CAS call: could not snapshot existing aircraft: " + ex);
                 }
             }
 
@@ -168,9 +157,8 @@ namespace CustomFireSupport
                         GiveAirTargetToSpawnedSortie(__instance, supportPosition);
                     }
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("CAS call: could not assign an air target: " + ex);
                 }
             }
 
@@ -200,6 +188,7 @@ namespace CustomFireSupport
                 {
                     return;
                 }
+                CasMissileAttackRun.BeginSortie(spawned);
                 if (!CasAirTargets.IsOurMissileSortie(spawned))
                 {
                     return; // not one of our air-to-ground-missile sorties: nothing to do.

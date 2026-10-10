@@ -30,9 +30,9 @@ namespace CustomFireSupport
     ///     Red), composed with the TOW missile's flight effects by the editor tool CasMissileComposer
     ///     and shipped in the bundle;
     ///   * the DATA (ballistics, warhead, explosion effect, impact audio) is a BOMB's - the ammo of the
-    ///     bomb hardpoint this mission loaded is cloned and only its visual is replaced;
-    ///   * the FLIGHT is the mod's own impact resolver, so the missile flies straight into the slot's
-    ///     impact circle instead of using the game's missile guidance.
+    ///     bundled bomb hardpoint is cloned and its visual is replaced;
+    ///   * the FLIGHT uses the mod's guidance attached to each launched missile, with the target
+    ///     selected by the launch patch.
     ///
     /// Bombs and rockets are NOT built here: they are mounted from the game's own hardpoint prefabs
     /// (the airframe's loadout or CasAttackLibrary), so the real vanilla pylons and ammo are used.
@@ -76,6 +76,9 @@ namespace CustomFireSupport
         /// </summary>
         private const string GunAudioEvent = "event:/Weapons/autocannon_2a42_single";
 
+        /// <summary>GHPC's native air-to-ground missile release one-shot.</summary>
+        private const string MissileLaunchAudioEvent = "event:/Weapons/launcher_AGM";
+
         /// <summary>
         /// Candidates for the SUSTAINED gun sound, best first. A distance strafe is heard as one long
         /// BRRRT, not as 140 separate pops, so the burst also drives a continuous emitter: the game's
@@ -109,9 +112,6 @@ namespace CustomFireSupport
         /// <summary>Ammo codex per profile key (avoids rescanning every slot build).</summary>
         private static readonly Dictionary<string, AmmoCodexScriptable> _ammo = new Dictionary<string, AmmoCodexScriptable>();
 
-        /// <summary>Profiles that already warned about having no matching ammo (log each once).</summary>
-        private static readonly HashSet<string> _warnedMissingAmmo = new HashSet<string>();
-
         /// <summary>
         /// Gun belt per built hardpoint TEMPLATE name.
         ///
@@ -128,11 +128,27 @@ namespace CustomFireSupport
         /// </summary>
         private static GameObject _explosionPrefab;
 
+        // Track immediately after creation, including objects from a partially failed build.
+        private static readonly List<UnityEngine.Object> _ownedAssets = new List<UnityEngine.Object>();
+
+        internal static void ResetForMission()
+        {
+            foreach (UnityEngine.Object asset in _ownedAssets) CasMissionLifecycle.Retire(asset);
+            _ownedAssets.Clear();
+            _built.Clear();
+            _ammo.Clear();
+            _belts.Clear();
+            Array.Clear(_bombDonors, 0, _bombDonors.Length);
+            _missilePrefabs.Clear();
+            _pylonBodies.Clear();
+            _explosionPrefab = null;
+            ClearPendingImpact();
+            // Keep weak ammo identities while old rounds finish unloading.
+        }
+
         private static string _gunBurstEvent;
 
         private static bool _gunBurstEventResolved;
-
-        private static bool _gunBurstEventWarned;
 
         /// <summary>
         /// A runtime hardpoint prefab able to deliver the requested attack type, or null.
@@ -164,7 +180,8 @@ namespace CustomFireSupport
             }
 
             AmmoCodexScriptable codex;
-            if (!_ammo.TryGetValue(key, out codex))
+            if (!_ammo.TryGetValue(key, out codex) || codex == null || codex.AmmoType == null ||
+                codex.AmmoType.ShotVisual == null)
             {
                 codex = FindAmmo(type, profile);
 
@@ -172,13 +189,6 @@ namespace CustomFireSupport
                 {
                     // Only cache successes: a later mission may load the exact round.
                     _ammo[key] = codex;
-                }
-                else if (_warnedMissingAmmo.Add(key))
-                {
-                    Log.Warn("CAS payload factory: no loaded ammo matches '" + profile.GunId + "' (hints: " +
-                             string.Join(", ", profile.AmmoHints) + ") for " + type + " on '" + airframeName +
-                             "'; that attack type stays unavailable here.");
-                    return null;
                 }
                 else
                 {
@@ -193,9 +203,8 @@ namespace CustomFireSupport
                 _built[key] = go;
                 return go;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Log.Error("CAS payload factory: failed to build " + type + " hardpoint '" + profile.GunId + "': " + ex);
                 return null;
             }
         }
@@ -207,18 +216,14 @@ namespace CustomFireSupport
         /// <summary>Missile ammo built by this factory, so the patches can recognise our own rounds.</summary>
         private static readonly WeakIdentitySet<AmmoType> _ourMissiles = new WeakIdentitySet<AmmoType>();
 
-        /// <summary>Once-per-key warnings for a missile payload that cannot be assembled.</summary>
-        private static readonly HashSet<string> _warnedMissingMissile = new HashSet<string>();
-
         /// <summary>Cached result of the missile prefab lookup (the bundle is loaded once per session).</summary>
         private static readonly Dictionary<string, GameObject> _missilePrefabs = new Dictionary<string, GameObject>();
 
         /// <summary>The visible pylon missile body, looked up in the bundle once per session.</summary>
         private static readonly Dictionary<string, GameObject> _pylonBodies = new Dictionary<string, GameObject>();
 
-        /// <summary>One bomb donor per side (Nato / Pact / Unknown), looked up once each.</summary>
+        /// <summary>Valid bundled bomb donor per side; failed lookups are retried.</summary>
         private static readonly AmmoCodexScriptable[] _bombDonors = new AmmoCodexScriptable[3];
-        private static readonly bool[] _bombDonorSearched = new bool[3];
 
         /// <summary>
         /// Builds (once per airframe / accuracy) the runtime air-to-ground missile hardpoint: the game's
@@ -252,25 +257,12 @@ namespace CustomFireSupport
             AmmoCodexScriptable bomb = FindBombDonor(side);
             if (bomb == null)
             {
-                if (_warnedMissingMissile.Add(key + "/bomb"))
-                {
-                    Log.Warn("CAS payload factory: no loaded BOMB to take the missile's data from, so " +
-                             "AirToGroundMissile stays unavailable" +
-                             (string.IsNullOrEmpty(airframeName) ? string.Empty : " on '" + airframeName + "'") +
-                             ". A mission with a bomb hardpoint (Mk-82 / FAB-250) or the bundled loadouts is needed.");
-                }
                 return null;
             }
 
             GameObject visual = FindMissilePrefab(profile.PrefabHint);
             if (visual == null)
             {
-                if (_warnedMissingMissile.Add(key + "/prefab"))
-                {
-                    Log.Warn("CAS payload factory: the bundle does not carry the '" + profile.PrefabHint +
-                             "' missile prefab (rebuild cas_assets with CasBundleBuilder), so " +
-                             "AirToGroundMissile stays unavailable.");
-                }
                 return null;
             }
 
@@ -280,15 +272,14 @@ namespace CustomFireSupport
                 _built[key] = go;
                 return go;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Log.Error("CAS payload factory: failed to build the AirToGroundMissile hardpoint: " + ex);
                 return null;
             }
         }
 
         /// <summary>
-        /// The bomb whose data the missile borrows, for one side. Preferring the ammo of a loaded BOMB
+        /// The bomb whose data the missile borrows, for one side. Preferring the ammo of a bundled BOMB
         /// hardpoint means this is literally the bomb the aircraft would have dropped, with its own
         /// explosion effect, decal and impact audio attached - and picking the SIDE'S bomb keeps the two
         /// factions apart (a Red sortie clones the Soviet 250 kg FAB, a Blue one the US Mk-82), the same
@@ -296,16 +287,15 @@ namespace CustomFireSupport
         /// </summary>
         private static AmmoCodexScriptable FindBombDonor(AirframeSide side)
         {
-            if (_bombDonorSearched[(int)side])
+            AmmoCodexScriptable cached = _bombDonors[(int)side];
+            if (cached != null && cached.AmmoType != null && cached.AmmoType.TntEquivalentKg >= 20f)
             {
-                return _bombDonors[(int)side];
+                return cached;
             }
-            _bombDonorSearched[(int)side] = true;
 
             List<GameObject> hardpoints = CasAttackLibrary.AllFor(CASAttackType.Bombs);
-            AmmoCodexScriptable first = null;
             AmmoCodexScriptable best = null;
-            int bestScore = 0;
+            int bestScore = int.MinValue;
 
             for (int i = 0; i < hardpoints.Count; i++)
             {
@@ -321,11 +311,6 @@ namespace CustomFireSupport
                 {
                     continue;
                 }
-                if (first == null)
-                {
-                    first = codex;
-                }
-
                 // A bomb, not a rocket or a gun pod that happened to be typed as one.
                 if (codex.AmmoType.TntEquivalentKg < 20f)
                 {
@@ -350,49 +335,13 @@ namespace CustomFireSupport
                 }
             }
 
-            _bombDonors[(int)side] = best != null ? best : first;
-            if (_bombDonors[(int)side] == null)
-            {
-                // No bomb hardpoint in this mission's content: fall back to the heaviest explosive round
-                // loaded, which is what a bomb data set looks like (a large TNT equivalent).
-                _bombDonors[(int)side] = HeaviestExplosiveRound();
-            }
+            _bombDonors[(int)side] = best;
             return _bombDonors[(int)side];
-        }
-
-        /// <summary>Fallback donor: the explosive round with the largest TNT equivalent in memory.</summary>
-        private static AmmoCodexScriptable HeaviestExplosiveRound()
-        {
-            AmmoCodexScriptable best = null;
-            AmmoCodexScriptable[] codexes = Resources.FindObjectsOfTypeAll<AmmoCodexScriptable>();
-            float bestTnt = 5f;
-            for (int i = 0; i < codexes.Length; i++)
-            {
-                AmmoCodexScriptable codex = codexes[i];
-                if (codex == null || codex.AmmoType == null || codex.AmmoType.ShotVisual == null)
-                {
-                    continue;
-                }
-                if (codex.AmmoType.Category != AmmoType.AmmoCategory.Explosive ||
-                    codex.AmmoType.TntEquivalentKg <= bestTnt)
-                {
-                    continue;
-                }
-                string lower = (codex.name + " " + codex.AmmoType.Name).ToLowerInvariant();
-                if (lower.Contains("grenade") || lower.Contains("smoke") || lower.Contains("flare"))
-                {
-                    continue;
-                }
-                bestTnt = codex.AmmoType.TntEquivalentKg;
-                best = codex;
-            }
-            return best;
         }
 
         /// <summary>
         /// The composed missile prefab (CasMissileComposer put the game's missile model together with the
-        /// TOW flight effects). Looks in our bundle first - that is where it ships - and then in anything
-        /// else loaded, so a future asset with the same name is picked up too.
+        /// TOW flight effects). Looks only in the pinned bundle's prefab catalogue.
         /// </summary>
         private static GameObject FindMissilePrefab(string hint)
         {
@@ -499,84 +448,6 @@ namespace CustomFireSupport
         }
 
         /// <summary>
-        /// The transform CASHardpoint.LaunchSingleMunition will actually fire from, applying the same choice
-        /// the game makes (`_visibleMunitions` fires from the slot's spawn point, otherwise from the single
-        /// muzzle). CASHardpoint spawns the round along this transform's FORWARD and then aligns its
-        /// velocity to it, so aiming it is how the mod aims the launch itself.
-        /// </summary>
-        internal static Transform LaunchTransformOf(CASHardpoint hardpoint)
-        {
-            if (hardpoint == null)
-            {
-                return null;
-            }
-            if (VisibleMunitionsRef(hardpoint))
-            {
-                GameObject[] points = MunitionSpawnPointsRef(hardpoint);
-                if (points != null && points.Length > 0)
-                {
-                    int index = Mathf.Clamp(hardpoint.TotalMunitionsLaunched, 0, points.Length - 1);
-                    if (points[index] != null)
-                    {
-                        return points[index].transform;
-                    }
-                }
-            }
-            return SpawnPointRef(hardpoint);
-        }
-
-        /// <summary>
-        /// Points the launch at the locked target, within limits, and returns the angle it had to correct
-        /// (degrees, negative when it did nothing).
-        ///
-        /// WHY: the round leaves along the launch point's forward and inherits that direction, so a missile
-        /// fired with the aircraft pointing anywhere but at its target has to TURN onto it after launch. At
-        /// the profile's ~Mach 1 that costs hundreds of metres, which is why a close-range or off-axis shot
-        /// used to sail past the target, loop back and hit nothing. Real Maverick and Kh-25 launches happen
-        /// with the seeker/designator already on the target, so the launch is aimed here too - but only
-        /// within <see cref="MaxLaunchAimDegrees"/> of the aircraft's own nose, so a wildly off-axis shot
-        /// still behaves like a missile that was fired outside its launch envelope instead of snapping to
-        /// the target from nowhere.
-        /// </summary>
-        internal static float AimLaunchAt(CASHardpoint hardpoint, Vector3 target, out string note)
-        {
-            note = null;
-            Transform launch = LaunchTransformOf(hardpoint);
-            if (launch == null)
-            {
-                return -1f;
-            }
-
-            Vector3 toTarget = target - launch.position;
-            if (toTarget.sqrMagnitude < 1f)
-            {
-                return -1f; // the target is on top of the aircraft: nothing sane to aim at
-            }
-            Vector3 wanted = toTarget.normalized;
-            float offAxis = Vector3.Angle(launch.forward, wanted);
-            if (offAxis < 0.5f)
-            {
-                return 0f; // already aimed
-            }
-
-            if (offAxis > MaxLaunchAimDegrees)
-            {
-                // Too far off to be a launch: aim at the nearest direction inside the limit, so the round
-                // still leaves pointing as close to the target as the aircraft's attitude allows.
-                note = "target is " + offAxis.ToString("0") + " deg off the launch axis (limit " +
-                       MaxLaunchAimDegrees.ToString("0") + " deg): the launch is only corrected to the limit";
-                wanted = Vector3.RotateTowards(launch.forward, wanted, MaxLaunchAimDegrees * Mathf.Deg2Rad, 0f);
-                offAxis = MaxLaunchAimDegrees;
-            }
-
-            launch.rotation = Quaternion.LookRotation(wanted, Vector3.up);
-            return offAxis;
-        }
-
-        /// <summary>How far off the aircraft's own nose the mod will aim a launch.</summary>
-        private const float MaxLaunchAimDegrees = 45f;
-
-        /// <summary>
         /// The impact point offset for one round: a draw from the slot's impact circle, or EXACTLY the
         /// target's own centre for a guaranteed-hit missile (CasAccuracy is then irrelevant by design).
         /// </summary>
@@ -608,7 +479,7 @@ namespace CustomFireSupport
             // FLIGHT PROFILE. The bomb the data came from is a gravity bomb: MuzzleVelocity 0 and a blunt
             // body's drag. Fired as a missile that is far too slow, so the missile gets its own motor
             // boost (added to the aircraft's speed by CASHardpoint.SpawnMunition) and a slimmer drag
-            // coefficient. Damage, warhead, explosion and sound stay the bomb's.
+            // coefficient. Damage, warhead, explosion and impact sound stay the bomb's.
             ammo.MuzzleVelocity = profile.BoostVelocityMeters;
             ammo.Coeff = Mathf.Clamp(bomb.AmmoType.Coeff * profile.DragScale, 0.02f, 2f);
             // Custom = the round's visual is ours: the marshaller destroys it instead of pooling it with
@@ -650,17 +521,21 @@ namespace CustomFireSupport
             }
 
             AmmoCodexScriptable codex = ScriptableObject.CreateInstance<AmmoCodexScriptable>();
+            _ownedAssets.Add(codex);
             codex.name = profile.MissileId;
             codex.AmmoType = ammo;
             _ourMissiles.Add(ammo);
 
             GameObject go = new GameObject("CFS " + CASAttackType.AirToGroundMissile + " " + profile.PrefabHint +
                                            " (runtime hardpoint) [acc=" + accuracyScale.ToString("0.###") + "]");
+            _ownedAssets.Add(go);
             CASHardpoint hardpoint = go.AddComponent<CASHardpoint>();
 
             TypeRef(hardpoint) = CASAttackType.AirToGroundMissile;
             AmmoRef(hardpoint) = codex;
-            AudioEventRef(hardpoint) = BombAudioEvent();
+            // The launch one-shot is the game's AGM sound. The cloned bomb's ImpactAudio below still
+            // supplies the detonation sound, so launch and explosion remain separate.
+            AudioEventRef(hardpoint) = MissileLaunchAudioEvent;
             // Only a base deviation: the launch direction is overridden on the round's first frame by
             // CasImpactAimPatch, which flies it to the impact point (see UsesImpactResolver).
             DeviationRef(hardpoint) = profile.DeviationDegrees;
@@ -737,8 +612,6 @@ namespace CustomFireSupport
             // A body with nothing to draw would silently turn the mount invisible for no reason.
             if (body.GetComponentsInChildren<Renderer>(true).Length == 0)
             {
-                Log.Warn("CAS payload factory: the pylon missile body prefab '" + prefab.name +
-                         "' has no renderer, so the missile stays invisible on the pylon.");
                 UnityEngine.Object.Destroy(body);
                 return null;
             }
@@ -794,34 +667,20 @@ namespace CustomFireSupport
                 }
             }
             _pylonBodies[key] = null;
-            Log.Warn("CAS payload factory: the bundle does not carry the pylon missile body '" + hint +
-                     "', so " + (profile != null ? profile.MissileId : "the missile") +
-                     " is not shown on the pylon until it is fired. Rebuild cas_assets with CasBundleRebuild.");
             return null;
         }
 
         /// <summary>
-        /// Reads the payload back and reports whether it really is "the game's missile model, flown by the
-        /// mod, carrying a BOMB's data". This is written to the log at mission start, so one session log
-        /// proves the assembly without anyone having to inspect the aircraft: every field the game needs is
-        /// checked through the accessors the game itself uses.
+        /// Reads the payload back through the same accessors used by the game. This keeps payload assembly
+        /// checks independent from Unity's serialized field layout.
         /// </summary>
-        /// <summary>The bomb hardpoint's own release audio, when the mission loaded one.</summary>
-        private static string BombAudioEvent()
-        {
-            GameObject bombHardpoint = CasAttackLibrary.FirstFor(CASAttackType.Bombs);
-            CASHardpoint hardpoint = bombHardpoint != null
-                ? bombHardpoint.GetComponentInChildren<CASHardpoint>(true)
-                : null;
-            return hardpoint != null ? GetAudioEvent(hardpoint) : string.Empty;
-        }
 
         /// <summary>
-        /// Applies the missile payload's attack timing to its CASAttackMeta: one missile per trigger pull,
-        /// a second apart, released further out than a bomb (a missile is a stand-off weapon). Called from
-        /// CustomSlotBuilder when it synthesizes the AirToGroundMissile attack entry.
+        /// Applies the missile payload's attack timing to its CASAttackMeta. SinglePass means one attack
+        /// run, but the standard custom missile loadout carries two stations; both stations fire during
+        /// that run, 1.5 seconds apart, before the aircraft leaves.
         /// </summary>
-        internal static void ApplyMissileAttackProfile(CASAttackMeta meta, Faction airframeFaction, int stations)
+        internal static void ApplyMissileAttackProfile(CASAttackMeta meta, Faction airframeFaction)
         {
             if (meta == null)
             {
@@ -831,33 +690,52 @@ namespace CustomFireSupport
             AirframeSide side = airframeFaction == Faction.Red ? AirframeSide.Pact : AirframeSide.Nato;
             CasAirframeCatalog.MissileProfile profile = CasAirframeCatalog.MissileFor(side);
 
-            // TWO PULLS, 1.5 SECONDS APART. The player's requirement: both mounted missiles go at the same
-            // target set, released as early as the run allows, but with a short interval rather than truly
-            // together - so the second round leaves the rail a beat after the first and each of them attacks
-            // its own target (the second missile is handed the next unclaimed enemy by CasTargetSpreadPatch
-            // at attach time, so on a single-target battlefield both go to that one). This is not the rocket
-            // pattern: rockets ripple many rounds down one line, whereas here it is two guided rounds, each
-            // with its own target and its own flight. (The aircraft's turn-in geometry itself still comes
-            // from the game's CASController.GetTurnToAttackTarget.)
-            meta.TriggerPulls = Mathf.Max(1, stations);
+            meta.TriggerPulls = 2;
             meta.TriggerPullInterval = 1.5f;
             meta.FireAllAtOnce = false;
-            // The run starts a kilometre outside the release range, so the aircraft is already settled on the
-            // target when it reaches it: CASHardpoint releases on raw range, and an approach distance equal to
-            // the release distance would have the aircraft still turning in when the missile left the rail.
-            // The run used to start a kilometre outside the release range, which had the aircraft flying a long
-            // run-up before the player saw anything happen. Now it starts just outside - the aircraft commits
-            // immediately and the missiles leave the rails as soon as the target is in range.
+            // The run starts just outside the release range, as it did before the missile-flight tuning.
             meta.ApproachDistance = profile.ReleaseDistanceMeters + 150f;
             meta.ReleaseDistance = profile.ReleaseDistanceMeters;
             meta.PreDelay = 0.2f;
             meta.PostDelay = 0.2f;
         }
 
-        /// <summary>True for a missile round this factory built (reference match, not name match).</summary>
+        /// <summary>
+        /// True for a missile round this factory built.
+        ///
+        /// Name matching is deliberately kept out of this predicate. The shipped game also has AmmoType
+        /// objects named "AGM-65 Maverick" and "Kh-25"; treating every same-name object as ours would make
+        /// vanilla aircraft enter the custom guidance path. The only name fallback is the synchronous
+        /// pending-context match in ConsumePendingImpactForRound.
+        /// </summary>
         internal static bool IsOurMissile(AmmoType ammo)
         {
+            if (ammo == null)
+            {
+                return false;
+            }
+
             return _ourMissiles.Contains(ammo);
+        }
+
+        // CASHardpointManager may deserialize a runtime hardpoint's AmmoType after the factory
+        // built its template. Register that live wrapper at the first launch so the binding path
+        // remains reference-safe even when its name was normalized by the serializer. The caller only
+        // invokes this after proving that the hardpoint is one of our runtime missile hardpoints.
+        internal static void RegisterRuntimeMissile(AmmoType ammo)
+        {
+            if (ammo != null)
+            {
+                _ourMissiles.Add(ammo);
+            }
+        }
+
+        private static bool IsGeneratedMissileName(string name)
+        {
+            return string.Equals(name, CasAirframeCatalog.NatoMissile.MissileId,
+                       StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(name, CasAirframeCatalog.PactMissile.MissileId,
+                       StringComparison.OrdinalIgnoreCase);
         }
 
         // ------------------------------------------------------------------
@@ -943,6 +821,7 @@ namespace CustomFireSupport
             // indexes the game's table - so the descriptor, not the index, is what makes the crater.)
 
             AmmoCodexScriptable codex = ScriptableObject.CreateInstance<AmmoCodexScriptable>();
+            _ownedAssets.Add(codex);
             codex.name = name;
             codex.AmmoType = ammo;
             _ourRounds.Add(ammo);
@@ -1127,10 +1006,8 @@ namespace CustomFireSupport
                 // ROUND is passed here and the throwaway clone never is.
                 cacheNewData.Invoke(database, new object[] { round });
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Log.Warn("CAS gun crater: could not cache '" + round.Name + "' in the game's decal " +
-                         "database (" + ex.Message + "); the round will keep the value it already had.");
             }
         }
 
@@ -1159,9 +1036,8 @@ namespace CustomFireSupport
                         _cacheNewData = method;
                     }
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Warn("CAS gun crater: the game's decal database could not be reflected: " + ex.Message);
                 }
             }
 
@@ -1309,7 +1185,8 @@ namespace CustomFireSupport
         private static bool _pendingGravityAware;
         private static Transform _pendingCarrier;
         private static Unit _pendingUnit;
-        private static readonly Dictionary<AmmoType, PendingImpact> _pendingImpacts = new Dictionary<AmmoType, PendingImpact>();
+        private static readonly Dictionary<AmmoType, PendingImpact> _pendingImpacts =
+            new Dictionary<AmmoType, PendingImpact>(AmmoReferenceComparer.Instance);
 
         private sealed class PendingImpact
         {
@@ -1345,8 +1222,8 @@ namespace CustomFireSupport
                     Offset = offset,
                     Ammo = ammo,
                     GravityAware = gravityAware,
-                    Carrier = carrier
-                    ,Unit = unit
+                    Carrier = carrier,
+                    Unit = unit
                 };
             }
             _pendingImpact = target != null && ammo != null;
@@ -1360,6 +1237,11 @@ namespace CustomFireSupport
 
         internal static void ClearPendingImpact()
         {
+            // SetPendingImpact writes both the reference-keyed entry and the legacy fallback.
+            // Clear both sides together so a failed SpawnMunition cannot be consumed by a later
+            // round of the same AmmoType, and a successful dictionary consume cannot be replayed
+            // through the fallback fields.
+            _pendingImpacts.Clear();
             _pendingImpact = false;
             _pendingTarget = null;
             _pendingOffset = Vector3.zero;
@@ -1370,8 +1252,36 @@ namespace CustomFireSupport
         }
 
         /// <summary>Hands the stash to the round that just finished LiveRound.Init, if it is that round.</summary>
+        // Strict reference-only entry point used by non-round callers and diagnostics.
         internal static bool ConsumePendingImpact(AmmoType ammo, out Transform target, out Vector3 offset,
             out bool gravityAware, out Transform carrier, out Unit unit)
+        {
+            return ConsumePendingImpactCore(ammo, false, out target, out offset, out gravityAware,
+                out carrier, out unit);
+        }
+
+        // A generated-name fallback is allowed only for the exact round captured inside our
+        // synchronous SpawnMunition scope. An arbitrary same-name LiveRound.Init is not sufficient.
+        internal static bool ConsumePendingImpactForRound(LiveRound round, out Transform target,
+            out Vector3 offset, out bool gravityAware, out Transform carrier, out Unit unit)
+        {
+            if (round == null)
+            {
+                target = null;
+                offset = Vector3.zero;
+                gravityAware = false;
+                carrier = null;
+                unit = null;
+                return false;
+            }
+            return ConsumePendingImpactCore(round.Info,
+                FireSupportPatches.CasMissileSpawnContextPatch.OwnsRound(round),
+                out target, out offset, out gravityAware,
+                out carrier, out unit);
+        }
+
+        private static bool ConsumePendingImpactCore(AmmoType ammo, bool allowGeneratedNameFallback,
+            out Transform target, out Vector3 offset, out bool gravityAware, out Transform carrier, out Unit unit)
         {
             PendingImpact pending;
             if (ammo != null && _pendingImpacts.TryGetValue(ammo, out pending))
@@ -1383,8 +1293,71 @@ namespace CustomFireSupport
                 gravityAware = valid && pending.GravityAware;
                 carrier = valid ? pending.Carrier : null;
                 unit = valid ? pending.Unit : null;
+                // The same SetPendingImpact call also populated the fallback fields. Consume
+                // them now or the next Init with this AmmoType would receive the same target again.
+                if (ReferenceEquals(ammo, _pendingAmmo))
+                {
+                    _pendingImpact = false;
+                    _pendingTarget = null;
+                    _pendingOffset = Vector3.zero;
+                    _pendingAmmo = null;
+                    _pendingGravityAware = false;
+                    _pendingCarrier = null;
+                    _pendingUnit = null;
+                }
                 return valid;
             }
+
+            // A runtime hardpoint clone can carry a distinct AmmoType wrapper. The caller has
+            // already verified this exact round belongs to the active SpawnMunition scope before
+            // allowing a generated-name fallback; a pending stash alone is not proof of ownership.
+            if (allowGeneratedNameFallback && ammo != null && IsGeneratedMissileName(ammo.Name) &&
+                _pendingImpacts.Count > 0)
+            {
+                AmmoType matchedKey = null;
+                PendingImpact matched = null;
+                foreach (KeyValuePair<AmmoType, PendingImpact> pair in _pendingImpacts)
+                {
+                    if (pair.Value != null && pair.Value.Ammo != null &&
+                        IsGeneratedMissileName(pair.Value.Ammo.Name) &&
+                        string.Equals(pair.Value.Ammo.Name, ammo.Name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        matchedKey = pair.Key;
+                        matched = pair.Value;
+                        break;
+                    }
+                }
+                if (matched != null)
+                {
+                    _pendingImpacts.Remove(matchedKey);
+                    bool valid = matched.Target != null;
+                    if (valid && ammo != null)
+                    {
+                        // This is the safe name-fallback boundary: the pending context was written by
+                        // our runtime hardpoint in the same synchronous SpawnMunition call. Remember the
+                        // deserialized wrapper by identity so later guidance/effect patches stay scoped
+                        // to this round and cannot catch a vanilla same-name missile.
+                        _ourMissiles.Add(ammo);
+                    }
+                    target = valid ? matched.Target : null;
+                    offset = valid ? matched.Offset : Vector3.zero;
+                    gravityAware = valid && matched.GravityAware;
+                    carrier = valid ? matched.Carrier : null;
+                    unit = valid ? matched.Unit : null;
+                    if (ReferenceEquals(matched.Ammo, _pendingAmmo))
+                    {
+                        _pendingImpact = false;
+                        _pendingTarget = null;
+                        _pendingOffset = Vector3.zero;
+                        _pendingAmmo = null;
+                        _pendingGravityAware = false;
+                        _pendingCarrier = null;
+                        _pendingUnit = null;
+                    }
+                    return valid;
+                }
+            }
+
             bool mine = _pendingImpact && _pendingTarget != null && ammo != null &&
                         ReferenceEquals(ammo, _pendingAmmo);
             target = mine ? _pendingTarget : null;
@@ -1392,7 +1365,9 @@ namespace CustomFireSupport
             gravityAware = mine && _pendingGravityAware;
             carrier = mine ? _pendingCarrier : null;
             unit = mine ? _pendingUnit : null;
-            ClearPendingImpact();
+            // An unrelated Init may run inside SpawnMunition. It must neither claim nor erase
+            // the launch context belonging to a different AmmoType instance.
+            if (mine) ClearPendingImpact();
             return mine;
         }
 
@@ -1521,6 +1496,7 @@ namespace CustomFireSupport
                     continue;
                 }
                 AmmoType ammo = codex.AmmoType;
+                if (IsOurRound(ammo) || IsOurMissile(ammo)) continue;
                 if (ammo.ShotVisual == null || ammo.Category != AmmoType.AmmoCategory.Explosive ||
                     ammo.TntEquivalentKg <= 0f || ammo.Guidance != AmmoType.GuidanceType.Unguided ||
                     ammo.Caliber < 15f || ammo.Caliber > 45f)
@@ -1562,8 +1538,6 @@ namespace CustomFireSupport
                 return best;
             }
 
-            Log.Warn("CAS payload factory: no loaded high-explosive autocannon round found for the gun " +
-                     "belt; the HE rounds will reuse the AP donor and therefore have no explosion effect.");
             return fallback;
         }
 
@@ -1596,7 +1570,6 @@ namespace CustomFireSupport
                 AmmoCodexScriptable ap = BuildBr30(apDonor, heDonor);
                 if (hei == null || ap == null)
                 {
-                    Log.Warn("CAS payload factory: could not build the Su-22 gun-pod rounds; using the donor round.");
                     return;
                 }
                 belt = new[] { hei, hei, ap };
@@ -1607,7 +1580,6 @@ namespace CustomFireSupport
                 AmmoCodexScriptable hei = BuildPgu13(heDonor, heDonor);
                 if (api == null || hei == null)
                 {
-                    Log.Warn("CAS payload factory: could not build the GAU-8/A rounds; using the donor round.");
                     return;
                 }
                 belt = new[] { api, api, api, api, hei };
@@ -1685,8 +1657,7 @@ namespace CustomFireSupport
 
         /// <summary>
         /// First candidate of GunBurstEventCandidates that FMOD actually knows, or null. The event names
-        /// were read out of the game's own Master.strings.bank, but a wrong path would throw inside
-        /// FMOD on every shot, so every candidate is checked once and the winner is logged.
+        /// are tried once after the banks are available and the successful path is cached.
         /// </summary>
         private static string ResolveGunBurstEvent()
         {
@@ -1714,15 +1685,8 @@ namespace CustomFireSupport
                 }
             }
 
-            // Not cached: the first slot can be built before every bank is loaded, so a later build
-            // gets another chance. The warning is still logged once.
-            if (!_gunBurstEventWarned)
-            {
-                _gunBurstEventWarned = true;
-                Log.Warn("CAS gun audio: none of the gun-fire events exist in the loaded FMOD banks (" +
-                         string.Join(", ", GunBurstEventCandidates) +
-                         "); a strafe will only have the per-round one-shots.");
-            }
+            // Not cached: the first slot can be built before every bank is loaded, so a later build gets
+            // another chance.
             return null;
         }
 
@@ -1800,6 +1764,9 @@ namespace CustomFireSupport
                 if (!string.IsNullOrEmpty(entry.Key) &&
                     objectName.StartsWith(entry.Key, StringComparison.Ordinal))
                 {
+                    if (entry.Value == null || entry.Value.Length == 0) return null;
+                    foreach (AmmoCodexScriptable round in entry.Value)
+                        if (round == null || round.AmmoType == null) return null;
                     return entry.Value;
                 }
             }
@@ -1998,6 +1965,7 @@ namespace CustomFireSupport
             // only a fallback - CasPayloadFactory.SlotAccuracy reads the owning slot live.
             GameObject go = new GameObject("CFS " + type + " " + profile.GunId +
                                            " (runtime hardpoint) [acc=" + accuracyScale.ToString("0.###") + "]");
+            _ownedAssets.Add(go);
             CASHardpoint hardpoint = go.AddComponent<CASHardpoint>();
 
             TypeRef(hardpoint) = type;
@@ -2044,6 +2012,7 @@ namespace CustomFireSupport
                     continue;
                 }
                 AmmoType ammo = codex.AmmoType;
+                if (IsOurRound(ammo) || IsOurMissile(ammo)) continue;
                 if (ammo.ShotVisual == null)
                 {
                     // CASHardpoint.SpawnMunition instantiates ShotVisual; without it the round is
@@ -2081,7 +2050,7 @@ namespace CustomFireSupport
 
                 // Generic fallback for autocannon-style rounds. Gun runs may borrow any fast gun round;
                 // a bomb / rocket / missile hardpoint must NEVER fall back to a gun round - if the
-                // right ammo is not loaded, degrade (Warn) instead of firing nonsense.
+                // right ammo is not loaded, skip the hardpoint instead of firing nonsense.
                 if (score == 0 && type == CASAttackType.GunRun && lower.Contains("mm") &&
                     LooksLikeAutocannonRound(lower))
                 {

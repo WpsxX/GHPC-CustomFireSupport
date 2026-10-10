@@ -14,7 +14,7 @@
 >   
 > Requires: MelonLoader 0.6.x + Harmony (bundled with MelonLoader)
 >   
-> Version: **v1.0.6**
+> Version: **v1.0.7**
 
 The mod puts **6 configurable slots** on the mission map's fire-support panel.
   
@@ -71,7 +71,6 @@ Set a slot's `Enabled` to `false` if you do not need it; to repurpose a slot, se
      
    can use to overwrite that section instead.
 
-   Log tag: `[CustomFireSupport]`. Log file: `Bin\MelonLoader\Latest.log`.
 
 ---
 
@@ -101,7 +100,6 @@ Set a slot's `Enabled` to `false` if you do not need it; to repurpose a slot, se
 | `HideVanillaFireSupport`  | bool   | `true`   | `true` / `false`                                    | `true` = the map panel shows only your slots. The game's own battery / sortie data is not modified and mission-scripted fire support still runs — only the buttons are hidden.                                      |
 | `IlluminationOnlyAtNight` | bool   | `true`   | `true` / `false`                                    | `true` = illumination slots appear at night only (auto-hidden by day); `false` = usable by day too.                                                                                                                 |
 | `SmokeOnlyDuringDay`      | bool   | `true`   | `true` / `false`                                    | `true` = smoke slots appear during the day only (auto-hidden at night); `false` = usable around the clock.                                                                                                          |
-| `VerboseLogging`          | bool   | `false`  | `true` / `false`                                    | `true` = print template discovery and slot parsing details to the log.                                                                                                                                              |
 | `CasDeployDistanceMeters` | float  | `8000.0` | `100` – `60000`                                     | Only for **missions that have no CAS manager of their own**: how far the aircraft's spawn / exit point sits from the player's start position (metres).                                                              |
 | `CasDeployBearingDegrees` | float  | `180.0`  | `0` – `360` (wraps at 360)                          | Bearing of that spawn point (degrees). `0` = +Z (north), increasing clockwise.                                                                                                                                      |
 | `CasPrewarmKeys`          | string | `"auto"` | `auto` / comma- or semicolon-separated keys / empty | Extra addressable keys to preload at session start. `auto` = load nothing extra (CAS airframes / loadouts / hardpoints and the smoke + illumination shells all ship in `cas_assets`); empty = disable this feature. |
@@ -183,7 +181,7 @@ Values (comma-separated, multiple allowed; `Any` or empty = no filter, i.e. ever
 | `Bombs`              | `Bomb`                      | Bombs                                                        |
 | `Rockets`            | `Rocket`                    | Rockets                                                      |
 | `GunRun`             | `Gun` / `Strafe` / `Cannon` | Gun strafing                                                 |
-| `AirToGroundMissile` | `AGM` / `ATGM` / `Missile`  | Air-to-ground missile: A-10 / MiG-23BN, one round per sortie |
+| `AirToGroundMissile` | `AGM` / `ATGM` / `Missile`  | Air-to-ground missile: Blue A-10 (AGM-65) / Red randomly selects Su-22 or Su-25 (Kh-25), two rounds per sortie |
 
 ### 4.5 `CasFlyover` (CAS flyover profile)
 
@@ -218,6 +216,12 @@ Values (comma-separated, multiple allowed; `Any` or empty = no filter, i.e. ever
 ---
 
 ## 6. Changelog
+
+### v1.0.7
+
+- Fixed bugs.
+- Optimized performance.
+- Added AGM-65 multi-target strike capability.
 
 ### v1.0.6
 

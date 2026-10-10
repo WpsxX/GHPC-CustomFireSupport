@@ -16,7 +16,7 @@ namespace CustomFireSupport
     /// and again defensively when a mission is prepared):
     ///
     ///   1. the optional "cas_assets" AssetBundle shipped next to the mod DLL. It is built from the
-    ///      game's own extracted assets and carries all 8 CAS airframes, the 13 loadouts and the 9
+    ///      game's own extracted assets and carries all 9 CAS airframes, the loadouts and
     ///      hardpoints, so loading it makes the donor scan and the hardpoint library see everything
     ///      from the very first mission. This is the only way to pre-load the fixed-wing jets, which
     ///      have no addressable key and otherwise only exist while a terrain scene is loaded.
@@ -60,18 +60,8 @@ namespace CustomFireSupport
         //
         // WHY THIS EXISTS (the authoritative source of CAS aircraft)
         //
-        // The mod used to decide what an aircraft was by scanning whatever the current scene had in
-        // memory (Resources.FindObjectsOfTypeAll<CASController>, the mission's CasAirframeUnit arrays)
-        // and then checking "did this come from our bundle?" by reference against _bundleObjects. That
-        // made the choice depend on what a particular scan happened to collect: the SAME airframe was
-        // treated as a bundled prefab in one mission and as a foreign object in the next, and a slot
-        // that drew the second case sent an aircraft whose CASController.Start() never ran - the call
-        // produced nothing and the HUD never showed "Searching for targets".
-        //
-        // The bundle is deterministic: it is built from 8 airframe prefabs and 13 loadout assets and
-        // every one of them is a real .prefab / .asset (verified at build time by CasBundleRebuild).
-        // So the aircraft roster is read from HERE, by name, and never from the scene. "Is it ours?" is
-        // then answered by lookup rather than by reference, which cannot vary between missions.
+        // The roster is read by name from the bundle and source membership is checked by managed
+        // lookup. Never scan live aircraft or invoke GameObject.scene to infer an asset's origin.
         // ------------------------------------------------------------------
 
         /// <summary>
@@ -82,8 +72,8 @@ namespace CustomFireSupport
         /// airframe by CasSu25Build from the components a CAS aircraft needs. It is the Red side's
         /// designated gun-run aircraft.
         ///
-        /// Keep this list and CasBundleRebuild's Airframes array in step - a name listed here that the
-        /// bundle lacks is reported loudly by ReportAirframeCatalogue.
+        /// Keep this list and CasBundleRebuild's Airframes array in step - a name listed here must exist
+        /// in the bundle catalogue.
         /// </summary>
         internal static readonly string[] BundleAirframeNames =
         {
@@ -99,12 +89,7 @@ namespace CustomFireSupport
         /// <summary>
         /// True when this GameObject is one of the bundle's own airframe prefabs.
         ///
-        /// This is the option-B roster rule in one predicate: the AIRFRAME must be a bundled prefab,
-        /// while a LOADOUT may come from anywhere. A scene airframe is a live object whose clone never
-        /// runs CASController.Start(), so it must never be selectable; a loadout is only ever read.
-        ///
-        /// Answers false when the catalogue is empty, so callers must gate on
-        /// <see cref="HasBundleAirframes"/> first and treat "no catalogue" as a separate case.
+        /// Answers false when the catalogue is empty. There is no scene-aircraft fallback.
         /// </summary>
         internal static bool IsBundledAirframe(GameObject prefab)
         {
@@ -144,7 +129,12 @@ namespace CustomFireSupport
         /// </summary>
         internal static bool HasBundleAirframes
         {
-            get { return _airframesByName.Count > 0; }
+            get
+            {
+                foreach (GameObject prefab in _airframesByName.Values)
+                    if (prefab != null) return true;
+                return false;
+            }
         }
 
         /// <summary>Every airframe found in the bundle, in BundleAirframeNames order.</summary>
@@ -173,7 +163,7 @@ namespace CustomFireSupport
             GameObject go = asset as GameObject;
             if (go != null)
             {
-                // Only the 8 airframes are indexed under their own name; hardpoint/munition prefabs are
+                // Only the 9 airframes are indexed under their own name; hardpoint/munition prefabs are
                 // not aircraft and must never be selectable as one.
                 for (int i = 0; i < BundleAirframeNames.Length; i++)
                 {
@@ -209,6 +199,14 @@ namespace CustomFireSupport
         private static readonly HashSet<GameObject> _bundleObjects = new HashSet<GameObject>();
 
         private static bool _done;
+        private static bool _bundleReady;
+        private static bool _bundleAttempted;
+
+        internal static void BeginMission()
+        {
+            // A missing/failed bundle may be retried once in the next mission. Loaded bundles stay pinned.
+            _bundleAttempted = false;
+        }
 
         /// <summary>
         /// True when an asset came out of the mod's own "cas_assets" bundle rather than from the game.
@@ -287,24 +285,18 @@ namespace CustomFireSupport
         }
 
         /// <summary>
-        /// Runs once per session. A missing bundle or empty key list disables that source quietly; an
-        /// explicit key that cannot be loaded is reported and never takes the mission down.
+        /// Bundle failure is retried at most once per mission; addressables are attempted once per session.
         /// </summary>
         internal static void EnsurePrewarmed()
         {
-            if (_done)
+            if (!_bundleReady && !_bundleAttempted)
             {
-                return;
+                _bundleAttempted = true;
+                LoadExtraBundle();
+                CasBundleMaterialRepair.RepairBundleMaterials();
             }
-            _done = true; // attempt exactly once per session; failures are logged, not retried
-
-            // 1. The bundled CAS asset pack (all airframes / loadouts / hardpoints), if installed.
-            LoadExtraBundle();
-
-            // 1b. Rebuild the bundled materials with the game's own shaders (see the class comment): the
-            // export cannot carry compiled shaders, and this is what makes the bundled smoke shells, flares
-            // and aircraft look exactly like the game's own instead of like white boxes.
-            CasBundleMaterialRepair.RepairBundleMaterials();
+            if (_done) return;
+            _done = true;
 
             // 2. Addressable keys from the config. Read straight from the parsed config:
             // CustomSupportRegistry.Global is only populated once a mission starts, so the early
@@ -326,16 +318,14 @@ namespace CustomFireSupport
                     GameObject prefab = handle.WaitForCompletion();
                     if (prefab == null)
                     {
-                        Log.Warn("CAS pre-warm: '" + key + "' resolved to null (wrong type or missing address).");
                         Addressables.Release(handle);
                         continue;
                     }
                     _keptHandles.Add(handle);
                     _keptPrefabs.Add(prefab);
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Warn("CAS pre-warm: '" + key + "' failed (" + ex.GetType().Name + ": " + ex.Message + ").");
                 }
             }
 
@@ -364,27 +354,29 @@ namespace CustomFireSupport
         /// </summary>
         private static void LoadExtraBundle()
         {
-            string path = FindBundlePath();
-            if (path == null)
+            string path = _casBundle == null ? FindBundlePath() : null;
+            if (_casBundle == null && path == null)
             {
                 return;
             }
 
+            // Capture each synchronous load attempt. Preserve its resource delta even if indexing
+            // fails, so a retry neither loses already loaded materials nor claims a new scene's assets.
+            HashSet<Material> previousMaterials = new HashSet<Material>(Resources.FindObjectsOfTypeAll<Material>());
+            HashSet<Shader> previousShaders = new HashSet<Shader>(Resources.FindObjectsOfTypeAll<Shader>());
             try
             {
                 // Dependencies are not returned by LoadAllAssets. Record materials/shaders introduced
                 // by this synchronous load, including the hardpoints' indirect ShotVisual prefabs.
-                HashSet<Material> previousMaterials = new HashSet<Material>(Resources.FindObjectsOfTypeAll<Material>());
-                HashSet<Shader> previousShaders = new HashSet<Shader>(Resources.FindObjectsOfTypeAll<Shader>());
-                AssetBundle bundle = AssetBundle.LoadFromFile(path);
+                AssetBundle bundle = _casBundle;
+                if (bundle == null) bundle = AssetBundle.LoadFromFile(path);
                 if (bundle == null)
                 {
-                    Log.Warn("CAS pre-warm: could not load bundle '" + path + "' (wrong Unity version?).");
                     return;
                 }
 
-                UnityEngine.Object[] assets = bundle.LoadAllAssets();
                 _casBundle = bundle;
+                UnityEngine.Object[] assets = bundle.LoadAllAssets();
                 foreach (Material material in Resources.FindObjectsOfTypeAll<Material>())
                     if (material != null && !previousMaterials.Contains(material)) BundleMaterials.Add(material);
                 foreach (Shader shader in Resources.FindObjectsOfTypeAll<Shader>())
@@ -397,7 +389,7 @@ namespace CustomFireSupport
                     {
                         continue;
                     }
-                    _bundleAssets.Add(asset);
+                    if (!_bundleAssets.Contains(asset)) _bundleAssets.Add(asset);
 
                     // Index it for the name-keyed catalogue that the CAS slot builder reads its aircraft
                     // roster from (see BundleAirframeNames). This is what makes the roster independent of
@@ -407,7 +399,7 @@ namespace CustomFireSupport
                     GameObject go = asset as GameObject;
                     if (go != null)
                     {
-                        _bundlePrefabs.Add(go);
+                        if (!_bundlePrefabs.Contains(go)) _bundlePrefabs.Add(go);
                         TrackBundlePrefab(go);
                     }
                 }
@@ -447,9 +439,6 @@ namespace CustomFireSupport
                         }
                         catch (Exception)
                         {
-                            Log.Warn("CAS pre-warm: skipping hardpoint '" +
-                                     (hardpoint == null ? "<null>" : hardpoint.name) +
-                                     "' whose ammo could not be read.");
                             continue;
                         }
                         if (ammo == null) continue;
@@ -471,8 +460,7 @@ namespace CustomFireSupport
                 // Verification pass. The before/after scan above is the authority on WHICH materials and
                 // shaders are the bundle's (they are the objects that did not exist before the load); a
                 // renderer the traversal reached can add nothing to it - but if it ever does, the two
-                // sources disagree and the material would render with its exported placeholder shader. So
-                // pick the stragglers up with the same criterion, and say so in the log.
+                // sources disagree and the material would render with its exported placeholder shader.
                 foreach (Renderer renderer in BundleRenderers)
                 {
                     if (renderer == null) continue;
@@ -489,10 +477,17 @@ namespace CustomFireSupport
                     }
                 }
 
+                _bundleReady = HasBundleAirframes && _loadoutsByName.Count > 0;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Log.Error("CAS pre-warm: bundle load failed: " + ex);
+            }
+            finally
+            {
+                foreach (Material material in Resources.FindObjectsOfTypeAll<Material>())
+                    if (material != null && !previousMaterials.Contains(material)) BundleMaterials.Add(material);
+                foreach (Shader shader in Resources.FindObjectsOfTypeAll<Shader>())
+                    if (shader != null && !previousShaders.Contains(shader)) BundleShaders.Add(shader);
             }
         }
 

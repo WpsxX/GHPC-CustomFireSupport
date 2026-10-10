@@ -44,10 +44,6 @@ namespace CustomFireSupport
             }
 
             _values = CfgFile.ReadCustomSection();
-            if (_values.Count == 0)
-            {
-                Log.Warn("no [CustomFireSupport] keys found in " + CfgFile.Path + " - code defaults are used.");
-            }
         }
 
         // ------------------------------------------------------------------
@@ -59,7 +55,6 @@ namespace CustomFireSupport
             GlobalConfig config = new GlobalConfig();
             config.Enabled = GetBool("Enabled", true);
             config.HideVanillaFireSupport = GetBool("HideVanillaFireSupport", true);
-            config.VerboseLogging = GetBool("VerboseLogging", false);
             config.IlluminationOnlyAtNight = GetBool("IlluminationOnlyAtNight", true);
             // The mirror rule: smoke screens are pointless in the dark, so smoke slots are hidden at
             // night unless this is turned off.
@@ -78,9 +73,8 @@ namespace CustomFireSupport
         // ------------------------------------------------------------------
 
         /// <summary>
-        /// Reads all five slots. Disabled slots are returned too (Enabled = false) so the caller can
-        /// log the whole picture; invalid enum values disable the slot with a warning instead of
-        /// silently building something different from what the user typed.
+        /// Reads all configured slots. Disabled slots are returned too so the registry can preserve
+        /// their configured positions.
         /// </summary>
         internal static SlotConfig[] ReadSlots()
         {
@@ -109,17 +103,6 @@ namespace CustomFireSupport
             string typeRaw = GetString(p + "Type", DefaultTypeFor(index));
             if (!SlotConfigParsing.TryParseSlotKind(typeRaw, out kind))
             {
-                if (SlotConfigParsing.IsRemovedHelicopterType(typeRaw))
-                {
-                    Log.Warn("slot " + index + ": Type '" + typeRaw + "' was the helicopter CAS slot, which was " +
-                             "removed - the mod flies fixed-wing CAS only now; slot disabled. Use " +
-                             "Type = \"CASSupport\" for an aircraft sortie.");
-                }
-                else
-                {
-                    Log.Warn("slot " + index + ": unknown Type '" + typeRaw + "' (valid: Artillery, ArtillerySmoke, " +
-                             "ArtilleryIllumination, CASSupport) - slot disabled.");
-                }
                 slot.Enabled = false;
                 return slot;
             }
@@ -136,7 +119,7 @@ namespace CustomFireSupport
 
             // Shell type (弹种): an explicit SlotN_Munition key wins; otherwise it follows the slot
             // type (ArtillerySmoke -> Smoke, ArtilleryIllumination -> Illumination, else AntiPersonnel).
-            // A value that mismatches the button type is still honoured, but flagged as a likely mistake.
+            // A value that mismatches the button type is still honoured for compatibility.
             slot.Munition = SlotConfigParsing.DefaultMunitionFor(kind);
             string munitionRaw = GetString(p + "Munition", string.Empty).Trim();
             if (!string.IsNullOrEmpty(munitionRaw))
@@ -146,26 +129,11 @@ namespace CustomFireSupport
                 {
                     slot.Munition = munition;
                 }
-                else
-                {
-                    Log.Warn("slot " + index + ": unknown Munition '" + munitionRaw +
-                             "' (valid: AntiPersonnel, AntiArmor, Smoke, Illumination) - using " +
-                             SlotConfigParsing.ToConfigName(slot.Munition) + ".");
-                }
-            }
-            if (!SlotConfigParsing.MunitionMatchesSlotKind(kind, slot.Munition))
-            {
-                Log.Warn("slot " + index + ": Munition " + SlotConfigParsing.ToConfigName(slot.Munition) +
-                         " does not match slot Type " + SlotConfigParsing.ToConfigName(kind) +
-                         "; honoured anyway, but the map button icon/flag may look odd.");
             }
 
             WeaponKind weapon;
             string weaponRaw = GetString(p + "Weapon", "Any");
-            if (!SlotConfigParsing.TryParseWeapon(weaponRaw, out weapon))
-            {
-                Log.Warn("slot " + index + ": unknown Weapon '" + weaponRaw + "' - using Any.");
-            }
+            SlotConfigParsing.TryParseWeapon(weaponRaw, out weapon);
             slot.Weapon = weapon;
 
             slot.ImpactDelaySeconds = SlotConfigParsing.ClampScale(GetFloat(p + "ImpactDelaySeconds", 1f));
@@ -190,17 +158,12 @@ namespace CustomFireSupport
             }
             else
             {
-                Log.Warn("slot " + index + ": unknown CasFlyover '" + flyoverRaw + "' - using auto.");
                 slot.Flyover = FlyoverKind.SinglePass;
                 slot.FlyoverWasExplicit = false;
             }
 
-            string attackProblems;
-            slot.AttackTypes = SlotConfigParsing.ParseAttackList(GetString(p + "CasAttackTypes", DefaultAttacks(index)), out attackProblems);
-            if (!string.IsNullOrEmpty(attackProblems))
-            {
-                Log.Warn("slot " + index + ": CasAttackTypes " + attackProblems + ".");
-            }
+            slot.AttackTypes = SlotConfigParsing.ParseAttackList(
+                GetString(p + "CasAttackTypes", DefaultAttacks(index)));
 
             return slot;
         }

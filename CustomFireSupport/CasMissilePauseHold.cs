@@ -42,10 +42,9 @@ namespace CustomFireSupport
                     HoldGuidedAttitude();
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 // Never let the hold itself interfere with a shot.
-                Log.Error("CAS paused missile attitude hold failed: " + ex);
                 enabled = false;
             }
         }

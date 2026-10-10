@@ -84,8 +84,6 @@ namespace CustomFireSupport
             private static readonly AccessTools.FieldRef<ArtilleryBattery, float> CurrentRadiusRef =
                 AccessTools.FieldRefAccess<ArtilleryBattery, float>("_currentRadius");
 
-            private static bool _warnedNoTargetPoint;
-
             private static void Prefix(ArtilleryBattery __instance)
             {
                 try
@@ -109,23 +107,13 @@ namespace CustomFireSupport
                     }
 
                     Vector3 called = TargetPointRef(__instance);
-                    if (called == Vector3.zero && !_warnedNoTargetPoint)
-                    {
-                        _warnedNoTargetPoint = true;
-                        Log.Warn("cluster munition: the battery reports its target point as the world origin " +
-                                 "(0, 0, 0), so the burst would be placed over the map origin instead of the " +
-                                 "called point. Report this line - ArtilleryBattery._currentTargetPoint is " +
-                                 "either not written or read wrong here.");
-                    }
-
                     _pending = launch;
                     _pendingAmmo = choice.Ammo.AmmoType;
                     _pendingAimPoint = called + DispersionOffset(__instance);
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
                     ClearPending();
-                    Log.Error("cluster munition: could not read the cargo round's target point: " + ex);
                 }
             }
 
@@ -172,9 +160,8 @@ namespace CustomFireSupport
                         stale.Disarm();
                     }
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("cluster munition: could not disarm a recycled round: " + ex);
                 }
             }
 
@@ -204,9 +191,8 @@ namespace CustomFireSupport
                     }
                     carrier.Arm(launch, aimPoint, __instance.ID);
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("cluster munition: could not arm the cargo round: " + ex);
                 }
             }
 
@@ -268,9 +254,8 @@ namespace CustomFireSupport
                     }
                     Steer(__instance, carrier, dt);
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("cluster munition: steering failed: " + ex);
                 }
             }
 
@@ -344,9 +329,8 @@ namespace CustomFireSupport
                     }
                     ClusterFragments.Throw(__instance);
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("cluster munition: could not throw the submunition's fragments: " + ex);
                 }
             }
         }

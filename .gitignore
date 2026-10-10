@@ -27,6 +27,7 @@ UserData/
 
 # Release artifacts: they attach to GitHub Releases, they are not committed.
 *.zip
+*.7z
 
 # OS
 Thumbs.db

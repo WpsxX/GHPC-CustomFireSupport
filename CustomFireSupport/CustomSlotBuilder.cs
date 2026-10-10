@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Text;
 using GHPC;
 using GHPC.Vehicle;
 using GHPC.Weaponry.Artillery;
@@ -44,6 +43,15 @@ namespace CustomFireSupport
     /// </summary>
     internal sealed class CustomCasMarker : MonoBehaviour
     {
+        private CASController _controller;
+
+        internal void Bind(CASController controller) { _controller = controller; }
+
+        private void OnDestroy()
+        {
+            CasMissileAttackRun.EndSortie(_controller);
+            _controller = null;
+        }
     }
 
     /// <summary>
@@ -96,7 +104,9 @@ namespace CustomFireSupport
         /// <summary>Drops the previous mission's sortie loadouts; called when a mission is prepared.</summary>
         internal static void ResetLoadouts()
         {
+            foreach (CASLoadoutScriptable loadout in _ourLoadouts) CasMissionLifecycle.Retire(loadout);
             _ourLoadouts.Clear();
+            _lastPickedAirframe.Clear();
         }
 
         /// <summary>
@@ -114,14 +124,11 @@ namespace CustomFireSupport
             return config.Missions < 0 ? InfiniteMissionsDisplay : config.Missions;
         }
 
-        internal static ArtillerySlot BuildArtillery(SlotConfig config, Dictionary<MunitionKind, List<AmmoTemplate>> ammo, Faction playerFaction, out string failure)
+        internal static ArtillerySlot BuildArtillery(SlotConfig config, Dictionary<MunitionKind, List<AmmoTemplate>> ammo, Faction playerFaction)
         {
-            failure = null;
-
             List<AmmoTemplate> candidates;
             if (ammo == null || !ammo.TryGetValue(config.Munition, out candidates) || candidates.Count == 0)
             {
-                failure = "no " + config.Munition + " shell template is available in this mission";
                 return null;
             }
 
@@ -144,7 +151,6 @@ namespace CustomFireSupport
 
                 if (chosen == null)
                 {
-                    failure = "no " + config.Munition + " shell matches AmmoName '" + config.AmmoNameFilter + "'; candidates: " + DescribeCandidates(candidates);
                     return null;
                 }
             }
@@ -168,8 +174,6 @@ namespace CustomFireSupport
                 }
                 else
                 {
-                    Log.Warn("slot " + config.Index + ": no cluster munition could be assembled here; firing the " +
-                             "ordinary anti-armour shell '" + chosen.AmmoName + "' instead.");
                 }
             }
 
@@ -202,17 +206,13 @@ namespace CustomFireSupport
             // The two keys used to be multiplied into each other: an impact scale below 1 also shortened
             // the interval by the same factor, with no way to switch that off - so a slot that set the
             // interval to the vanilla value still fired its rounds 0.3x as far apart, which in game looks
-            // like the interval key being ignored. ArtilleryTiming has the full story; the verbose line
-            // below says out loud what the effective spacing is, so it can be checked against the cfg.
+            // like the interval key being ignored. ArtilleryTiming keeps the effective spacing independent
+            // from the first-round delay, so each cfg value has one clear effect.
             ArtilleryTiming.Timing timing = ArtilleryTiming.Resolve(
                 vanillaImpact, vanillaInterShot, config.ImpactDelaySeconds, config.InterShotDelaySeconds);
             bool instant = timing.InstantVolley;
             float impactDelay = timing.ImpactDelaySeconds;
             float interShot = timing.InterShotSeconds;
-
-            if (!instant && config.ImpactDelaySeconds > 0f && config.ImpactDelaySeconds < 1f)
-            {
-            }
 
             // The panel's cooldown bookkeeping must never reach 0 while the volley runs (CooldownManager
             // drops the entry and the button freezes on "Incoming"), so the stored cooldown is at least
@@ -262,35 +262,21 @@ namespace CustomFireSupport
         /// loadout carries.
         ///
         /// Type-specific behaviour (unchanged):
-        ///   * GunRun is pinned to A-10 (Blue) / MiG-23BN (Red) and built by the runtime factory;
+        ///   * GunRun is pinned to A-10 (Blue) / Su-25 (Red) and built by the runtime factory;
         ///   * Bombs / Rockets use the game's own hardpoint prefabs;
         ///   * rockets and gun runs fire with the built-in zero-spread precision.
         /// </summary>
-        internal static CasSlot BuildCas(SlotConfig config, List<CasTemplate> templates, Faction playerFaction,
-            out string failure)
+        internal static CasSlot BuildCas(SlotConfig config, List<CasTemplate> templates, Faction playerFaction)
         {
-            failure = null;
             if (templates == null || templates.Count == 0)
             {
-                failure = "no CAS airframe template available (mission scene, session cache and loaded assets were all empty)";
                 return null;
             }
 
             CasTemplate template = PickBest(templates, config, playerFaction);
             if (template == null)
             {
-                failure = "no airframe can deliver " +
-                          (config.AttackTypes != null && config.AttackTypes.Length > 0
-                              ? FireSupportTemplates.DescribeAttacks(config.AttackTypes)
-                              : "this slot's loadout") +
-                          "; available: " + DescribeTemplates(templates);
                 return null;
-            }
-
-            if (template.Faction != playerFaction && template.Faction != Faction.Neutral)
-            {
-                Log.Warn("slot " + config.Index + ": no " + playerFaction + " airframe is available here; using '" +
-                         template.Name + "' (" + template.Faction + ") instead.");
             }
 
             // Resolve the payload: the template's own hardpoints unless a requested attack type cannot
@@ -337,10 +323,6 @@ namespace CustomFireSupport
                 GameObject first = FirstHardpoint(hardpoints);
                 if (first != null)
                 {
-                    Log.Warn("slot " + config.Index + ": the " + (hardpoints == null ? 0 : hardpoints.Length) +
-                             "-entry hardpoint list cannot be mounted on '" + template.Name + "' (" +
-                             (template.AttachPointCount <= 0 ? "unknown" : template.AttachPointCount.ToString()) +
-                             " attach point(s)); collapsing to a single prefab so the sortie can still fire.");
                     hardpoints = new[] { first };
                     AttackKind singleKind;
                     if (TryKindOfHardpoint(first, out singleKind))
@@ -352,8 +334,6 @@ namespace CustomFireSupport
                         // The one prefab left carries a weapon the mod no longer offers (air-to-air missile
                         // / training round). Declaring no attack is honest: the alternative is a bomb entry
                         // that the pylon cannot actually deliver.
-                        Log.Warn("slot " + config.Index + ": the only mountable hardpoint on '" + template.Name +
-                                 "' carries an attack type the mod no longer offers; the sortie has no usable weapon.");
                         attacks = new CASAttackMeta[0];
                     }
                 }
@@ -364,7 +344,35 @@ namespace CustomFireSupport
             // one-station-plus-empty layout (built by TrySynthesizePayload) arrives here intact, and so do
             // each airframe's own bombs / rockets. See that method for why the shape matters.
             loadout.HardpointPrefabs = hardpoints;
-            loadout.Attacks = attacks;
+            if (!CasPrewarmer.IsBundledAirframe(template.Prefab) ||
+                !HardpointListFits(hardpoints, template.AttachPointCount) || template.AttachPointCount <= 0)
+            {
+                return null;
+            }
+            List<CASAttackMeta> mountedAttacks = new List<CASAttackMeta>();
+            if (attacks != null)
+            {
+                for (int i = 0; i < attacks.Length; i++)
+                {
+                    CASAttackMeta attack = attacks[i];
+                    if (attack == null) continue;
+                    for (int p = 0; p < hardpoints.Length; p++)
+                    {
+                        CASHardpoint hp = hardpoints[p] != null
+                            ? hardpoints[p].GetComponentInChildren<CASHardpoint>(true) : null;
+                        if (FireSupportTemplates.IsUsableHardpoint(hp) && hp.Type == attack.UniqueType)
+                        {
+                            mountedAttacks.Add(attack);
+                            break;
+                        }
+                    }
+                }
+            }
+            if (mountedAttacks.Count == 0)
+            {
+                return null;
+            }
+            loadout.Attacks = mountedAttacks.ToArray();
 
             CASLoadoutScriptable loadoutAsset = ScriptableObject.CreateInstance<CASLoadoutScriptable>();
             loadoutAsset.Loadout = loadout;
@@ -373,20 +381,8 @@ namespace CustomFireSupport
             CasAirframeUnit airframe = new CasAirframeUnit();
             airframe.airframePrefab = template.Prefab;
             airframe.Loadout = loadoutAsset;
-            // Flyover: an explicit cfg value wins; an empty CasFlyover means "auto" and uses the
-            // typical profile of the chosen airframe.
-            FlyoverKind flyover = config.Flyover;
-            if (!config.FlyoverWasExplicit)
-            {
-                AirframeInfo info = CasAirframeCatalog.Match(template.Name);
-                // Unknown airframe: every CAS aircraft in the game is a jet or a prop plane, so a single
-                // pass is the safe default.
-                flyover = info != null ? info.Flyover : FlyoverKind.SinglePass;
-            }
-
-            airframe.flyoverType = flyover == FlyoverKind.Linger
-                ? CasAirframeUnit.FlyoverType.Linger
-                : CasAirframeUnit.FlyoverType.SinglePass;
+            // All custom CAS sorties use the original one-pass behaviour.
+            airframe.flyoverType = CasAirframeUnit.FlyoverType.SinglePass;
             CasMissionsRef(airframe) = MissionsToStore(config);
             return new CasSlot
             {
@@ -460,8 +456,8 @@ namespace CustomFireSupport
 
             // GunRun / AGM: the runtime factory.
             // Everything else: the template's own vanilla hardpoint, then the loaded hardpoint library.
-            // A type nobody can supply is reported and the template's loadout is kept, so FilterAttacks
-            // degrades with a warning instead of producing an aircraft that never fires.
+            // A type nobody can supply leaves the template's loadout intact, so FilterAttacks can
+            // degrade without producing an aircraft that never fires.
             GameObject[] pool = new GameObject[requested.Count];
             List<AttackKind> missing = new List<AttackKind>();
             for (int i = 0; i < requested.Count; i++)
@@ -493,24 +489,16 @@ namespace CustomFireSupport
             }
             if (missing.Count > 0)
             {
-                Log.Warn("slot " + config.Index + ": cannot mount " +
-                         FireSupportTemplates.DescribeAttacks(missing.ToArray()) + " on '" + template.Name +
-                         "' - no loaded hardpoint delivers it, so that attack type stays unavailable.");
                 return false;
             }
 
             int attachPoints = template.AttachPointCount;
             if (requested.Count > 1 && attachPoints <= 0)
             {
-                Log.Warn("slot " + config.Index + ": cannot mix attack types on '" + template.Name +
-                         "' because its hardpoint attach point count is unknown; keeping the template's own loadout.");
                 return false;
             }
             if (requested.Count > 1 && requested.Count > attachPoints)
             {
-                Log.Warn("slot " + config.Index + ": requested " + requested.Count +
-                         " attack types but '" + template.Name + "' has only " + attachPoints +
-                         " hardpoint attach point(s); keeping the template's own loadout instead.");
                 return false;
             }
 
@@ -523,7 +511,7 @@ namespace CustomFireSupport
                     // hardpoint onto EVERY station, hanging a missile on each one while only the airframe's
                     // own stations can fire - and on the Su-25 that would also break the symmetric pair.
                     //
-                    // Which stations those are is per airframe: a wing PAIR for the A-10 and the MiG-23BN, and
+                    // Which stations those are is per airframe: a wing PAIR for the A-10 and the Su-22, and
                     // a symmetric PAIR on the Su-25's eight under-wing stations. CASAttackMeta.Fire() walks the
                     // included hardpoints one per trigger pull, and its TriggerPulls is set to the station
                     // count, so the Su-25 launches both missiles. Null entries leave the other stations empty
@@ -536,9 +524,13 @@ namespace CustomFireSupport
                         int index = stations[s];
                         if (index >= 0 && index < attachPoints)
                         {
-                            perStation[index] = pool[0];
+                            if (perStation[index] == null)
+                            {
+                                perStation[index] = pool[0];
+                            }
                         }
                     }
+
                     hardpoints = perStation;
                 }
                 else
@@ -801,13 +793,9 @@ namespace CustomFireSupport
                 }
                 else if (type == CASAttackType.AirToGroundMissile)
                 {
-                    // The missile payload is ours, so its attack timing is too: one missile per trigger
-                    // pull, a second apart, released further out than a bomb (a missile is meant to be
-                    // launched from stand-off range, and the mod flies it onto the impact point anyway).
-                    // The pull count is the airframe's missile-station count, so the Su-25's pair launches
-                    // both rounds.
-                    CasPayloadFactory.ApplyMissileAttackProfile(meta, template.Faction,
-                        CasAirframeCatalog.MissileStationsFor(template.Name).Length);
+                    // The missile payload is ours, so its attack timing is too: both standard stations fire
+                    // during this one SinglePass run, released further out than a bomb.
+                    CasPayloadFactory.ApplyMissileAttackProfile(meta, template.Faction);
                 }
 
                 list.Add(meta);
@@ -829,9 +817,6 @@ namespace CustomFireSupport
                 // hardpoint prefabs. CASHardpointManager copies its attack list from Loadout.Attacks, so
                 // leaving this empty means the aircraft flies its pass and never fires. Build the
                 // entries from the configured types (or from what the hardpoints actually carry).
-                Log.Warn("slot " + config.Index + ": template '" + template.Name + "' declares no attack entries; " +
-                         "building them from its hardpoints (" +
-                         FireSupportTemplates.DescribeAttacks(template.AvailableAttacks) + ").");
                 return BuildDefaultAttacks(config.AttackTypes != null && config.AttackTypes.Length > 0
                     ? config.AttackTypes
                     : template.AvailableAttacks);
@@ -843,13 +828,11 @@ namespace CustomFireSupport
             }
 
             List<CASAttackMeta> kept = new List<CASAttackMeta>();
-            List<AttackKind> unavailable = new List<AttackKind>();
             for (int i = 0; i < config.AttackTypes.Length; i++)
             {
                 AttackKind wanted = config.AttackTypes[i];
                 if (!template.Supports(wanted))
                 {
-                    unavailable.Add(wanted);
                     continue;
                 }
 
@@ -874,16 +857,8 @@ namespace CustomFireSupport
                     : new CASAttackMeta { UniqueType = FireSupportTemplates.ToGameAttack(wanted) });
             }
 
-            if (unavailable.Count > 0)
-            {
-                Log.Warn("slot " + config.Index + ": template '" + template.Name + "' does not carry " + DescribeAttacks(unavailable) +
-                         "; ignored. It carries: " + FireSupportTemplates.DescribeAttacks(template.AvailableAttacks));
-            }
-
             if (kept.Count == 0)
             {
-                Log.Warn("slot " + config.Index + ": none of the requested CasAttackTypes are carried by template '" + template.Name +
-                         "'; using every attack the template has instead.");
                 CASAttackMeta[] all = DeepCopySupported(source, template);
                 if (all.Length > 0)
                 {
@@ -892,8 +867,6 @@ namespace CustomFireSupport
 
                 // The template declares no attack entries at all - build plain ones from the config so
                 // the sortie is still deliverable instead of silently doing nothing.
-                Log.Warn("slot " + config.Index + ": template '" + template.Name + "' declares no attack entries; " +
-                         "building default ones for " + FireSupportTemplates.DescribeAttacks(config.AttackTypes) + ".");
                 return BuildDefaultAttacks(config.AttackTypes);
             }
 
@@ -977,9 +950,9 @@ namespace CustomFireSupport
             bool wantsMissile = wanted != null && Array.IndexOf(wanted, AttackKind.AirToGroundMissile) >= 0;
             bool wantsRockets = wanted != null && Array.IndexOf(wanted, AttackKind.Rockets) >= 0;
             bool wantsBombs = wanted != null && Array.IndexOf(wanted, AttackKind.Bombs) >= 0;
-            // A GUN RUN is pinned to one designated aircraft per side (A-10 / MiG-23BN) and must not be
+            // A GUN RUN is pinned to one designated aircraft per side (A-10 / Su-25) and must not be
             // re-drawn per call. A MISSILE slot is NOT pinned: a side may have more than one designated
-            // missile aircraft (Blue has only the A-10, Red has the MiG-23BN and the Su-25), so it draws
+            // missile aircraft (Blue has only the A-10, Red has the Su-22 and Su-25), so it draws
             // between them (see DrawMissileAirframe).
             bool pinnedAirframe = wantsGunRun;
 
@@ -1099,7 +1072,7 @@ namespace CustomFireSupport
 
             // Bomb and rocket slots fly a DIFFERENT airframe with a different loadout on every call.
             // Gun runs and missile slots are deliberately excluded: their airframe is the designated one
-            // (Blue = A-10, Red = MiG-23BN) and must stay fixed.
+            // (Blue = A-10, Red = Su-25) and must stay fixed.
             //
             // This is safe again now that the airframe roster comes from the bundle's name-keyed catalogue
             // (CasPrewarmer.BundleAirframeNames) instead of a scene scan. The reason the draw used to be
@@ -1141,8 +1114,8 @@ namespace CustomFireSupport
             List<CasTemplate> scored, SlotConfig config, Faction playerFaction, bool wantsRockets, bool wantsBombs,
             bool wantsMissile)
         {
-            // An air-to-ground missile slot draws between the side's DESIGNATED missile aircraft: the A-10
-            // on Blue, the MiG-23BN and the Su-25 on Red. Nothing else may appear here - the missile is
+            // An air-to-ground missile slot uses the side's DESIGNATED missile aircraft: the A-10
+            // on Blue and the Su-22 or Su-25 on Red. Nothing else may appear here - the missile is
             // synthesized at runtime, so CanDeliver() accepts every airframe, and the generic pools would
             // otherwise hand a missile slot an F-4, a MiG-21 or anything else.
             if (wantsMissile)
@@ -1182,9 +1155,6 @@ namespace CustomFireSupport
             {
                 // Nothing validated. Fall back to the ranked winner rather than dropping the slot: a slot
                 // that spawns something imperfect is better than a button that sends nothing.
-                Log.Warn("slot " + config.Index + ": no airframe could be validated for this call's " +
-                         FireSupportTemplates.DescribeAttacks(config.AttackTypes) + " slot; using the ranked " +
-                         "winner '" + (fallback == null ? "?" : fallback.Name) + "' anyway.");
                 return fallback;
             }
 
@@ -1198,17 +1168,17 @@ namespace CustomFireSupport
         }
 
         /// <summary>
-        /// Draws one of the side's designated air-to-ground-missile aircraft: the A-10 for Blue, the
-        /// MiG-23BN or the Su-25 for Red.
+        /// Draws the side's designated air-to-ground-missile aircraft: the A-10 for Blue, or a random
+        /// Su-22/Su-25 for Red.
         ///
         /// THE POOL IS DELIBERATELY NARROW. The missile is built at runtime by CasPayloadFactory, so
         /// CanDeliver(AirToGroundMissile) answers "yes" for EVERY airframe; drawing from the generic pools
         /// would therefore let a missile slot send an F-4, a MiG-21 or anything else. Restricting the pool
         /// to the designated aircraft is what keeps the missile on the airframe that is supposed to carry it.
         ///
-        /// The draw avoids the model this slot flew last, so a side with more than one designated airframe
-        /// alternates between them instead of one flying every sortie. Returns null when no designated
-        /// airframe is available at all.
+        /// The draw avoids the model this slot flew last, so the two Red airframes alternate when both
+        /// are available instead of one flying every sortie. Returns null when no designated airframe is
+        /// available at all.
         /// </summary>
         private static CasTemplate DrawMissileAirframe(List<CasTemplate> scored, SlotConfig config,
             Faction playerFaction)
@@ -1235,9 +1205,6 @@ namespace CustomFireSupport
             CasTemplate drawn = DrawDifferent(pool, previous) ?? pool[UnityEngine.Random.Range(0, pool.Count)];
             drawn = drawn ?? pool[0];
 
-            // Info, NOT Verbose: the missile slot is the one place where the drawn airframe decides which
-            // runtime payload gets built, so a bug report about "the missile call did nothing" needs this
-            // line without the player having to find the VerboseLogging preference first.
             return drawn;
         }
 
@@ -1545,12 +1512,6 @@ namespace CustomFireSupport
             List<CasTemplate> measuredOwnSide = FilterBySide(measured, playerFaction, config, skipGunRunAirframes);
             if (measuredOwnSide.Count > 0)
             {
-                Log.Warn("slot " + config.Index + ": no " + playerFaction + " airframe carries " +
-                         FireSupportTemplates.DescribeAttacks(config.AttackTypes) +
-                         " in its own loadout, so the payload has to be synthesized from the loaded " +
-                         "hardpoint library (that is another aircraft's pylon; a rocket pod mounted " +
-                         "this way may look wrong in game). Drawing only from the " + measuredOwnSide.Count +
-                         " validated " + playerFaction + " pair(s).");
                 return measuredOwnSide;
             }
 
@@ -1558,24 +1519,16 @@ namespace CustomFireSupport
             // dropping the call - but never silently, because the player will see a foreign aircraft.
             if (measured.Count > 0)
             {
-                Log.Warn("slot " + config.Index + ": no " + playerFaction + " airframe+loadout pair can be " +
-                         "validated for the " + FireSupportTemplates.DescribeAttacks(config.AttackTypes) +
-                         " slot; widening the draw to any faction (" + measured.Count + " candidate(s)). " +
-                         "The aircraft that arrives may belong to the other side.");
                 return measured;
             }
 
             // Tier 3: nothing measured either. Do not drop the call - keep the old pool, but say so.
-            Log.Warn("slot " + config.Index + ": no airframe+loadout pair could be validated for the " +
-                     FireSupportTemplates.DescribeAttacks(config.AttackTypes) + " slot (no candidate " +
-                     "carries it and none reports a usable attach-point count). Falling back to the " +
-                     "unvalidated candidate list; this sortie may spawn no aircraft at all.");
             return scored;
         }
 
         /// <summary>
         /// Restricts a draw pool to the player's own faction, widening to Neutral and then to any side
-        /// only when the player's side has nothing at all. The widening is reported by the caller.
+        /// only when the player's side has nothing at all.
         ///
         /// <paramref name="playerFaction"/> is Faction.Blue (NATO / US) or Faction.Red (Pact / Soviet);
         /// the aircraft catalog's <see cref="AirframeSide"/> table is what decides which is which, so an
@@ -1693,8 +1646,8 @@ namespace CustomFireSupport
 
         /// <summary>
         /// The aircraft the air-to-ground missile is pinned to, per side: the A-10 (Blue) carries the
-        /// AGM-65 model, the MiG-23BN (Red) flies the game's Soviet missile visual - the same two the gun run uses, so
-        /// the designated pair stays the player's familiar ground attack aircraft.
+        /// AGM-65 model; the Su-22 or Su-25 (Red) flies the game's Soviet missile visual, with two
+        /// airframe-specific symmetric stations.
         /// </summary>
         private static int DesignatedMissileBonus(CasTemplate candidate, Faction playerFaction)
         {
@@ -1703,47 +1656,6 @@ namespace CustomFireSupport
             return CasAirframeCatalog.IsMissileAirframe(name, side) ? 700 : 0;
         }
 
-        private static string DescribeCandidates(List<AmmoTemplate> candidates)
-        {
-            StringBuilder builder = new StringBuilder();
-            for (int i = 0; i < candidates.Count; i++)
-            {
-                if (i > 0)
-                {
-                    builder.Append(", ");
-                }
-                builder.Append('\'').Append(candidates[i].AmmoName).Append('\'');
-            }
-            return builder.ToString();
-        }
-
-        private static string DescribeTemplates(List<CasTemplate> templates)
-        {
-            StringBuilder builder = new StringBuilder();
-            for (int i = 0; i < templates.Count; i++)
-            {
-                if (i > 0)
-                {
-                    builder.Append(", ");
-                }
-                builder.Append('\'').Append(templates[i].Name).Append("' + '").Append(templates[i].LoadoutName).Append('\'');
-            }
-            return builder.ToString();
-        }
-
-        private static string DescribeAttacks(List<AttackKind> attacks)
-        {
-            StringBuilder builder = new StringBuilder();
-            for (int i = 0; i < attacks.Count; i++)
-            {
-                if (i > 0)
-                {
-                    builder.Append(", ");
-                }
-                builder.Append(SlotConfigParsing.ToConfigName(attacks[i]));
-            }
-            return builder.ToString();
-        }
     }
 }
 

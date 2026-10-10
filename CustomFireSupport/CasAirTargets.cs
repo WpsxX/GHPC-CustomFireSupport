@@ -1,6 +1,7 @@
 using GHPC;
 using GHPC.AI;
 using GHPC.Vehicle;
+using HarmonyLib;
 using UnityEngine;
 
 namespace CustomFireSupport
@@ -39,6 +40,11 @@ namespace CustomFireSupport
     /// </summary>
     internal static class CasAirTargets
     {
+        // Loadout is private in the installed game assembly. Publicized build references must
+        // never turn this into a direct field read: Mono rejects that access at runtime.
+        private static readonly AccessTools.FieldRef<CASHardpointManager, CASLoadoutScriptable> LoadoutRef =
+            AccessTools.FieldRefAccess<CASHardpointManager, CASLoadoutScriptable>("Loadout");
+
         /// <summary>
         /// True for an aircraft, by the game's own two classifications. Ground vehicles, infantry,
         /// bunkers and static weapons all answer false, so every behavioural branch behind this test is
@@ -70,7 +76,9 @@ namespace CustomFireSupport
         /// </summary>
         internal static Unit UnitOf(Transform target)
         {
-            return target == null ? null : target.GetComponentInParent<Unit>();
+            // A locked Center can survive while the Unit is inactive (streaming/wreck cleanup).
+            // Preserve the explicit launch identity even then; selection separately checks Neutralized.
+            return target == null ? null : target.GetComponentInParent<Unit>(true);
         }
 
         /// <summary>
@@ -102,6 +110,29 @@ namespace CustomFireSupport
         internal static bool IsOurMissileSortie(CASController controller)
         {
             return CasFireChainRepair.IsOurSortie(controller) && CanDeliverAirToGroundMissile(controller);
+        }
+
+        internal static bool IsPureMissileSortie(CASController controller)
+        {
+            if (!IsOurMissileSortie(controller)) return false;
+            CASHardpointManager manager = controller.GetComponentInChildren<CASHardpointManager>(true);
+            CASLoadoutScriptable loadout = manager != null ? LoadoutRef(manager) : null;
+            if (loadout == null || loadout.Loadout == null ||
+                loadout.Loadout.Attacks == null) return false;
+            bool missileMeta = false;
+            foreach (CASAttackMeta meta in loadout.Loadout.Attacks)
+            {
+                if (meta == null) continue;
+                if (meta.UniqueType != CASAttackType.AirToGroundMissile) return false;
+                missileMeta = true;
+            }
+            bool missilePylon = false;
+            foreach (CASHardpoint point in manager.GetComponentsInChildren<CASHardpoint>(true))
+            {
+                if (point.Type != CASAttackType.AirToGroundMissile) return false;
+                missilePylon = true;
+            }
+            return missileMeta && missilePylon;
         }
 
         /// <summary>

@@ -47,8 +47,6 @@ namespace CustomFireSupport
         {
             if (SaveDataListField == null || SaveDataType == null || SaveDataCtor == null)
             {
-                Log.Error("terrain snapshot: the game's TerrainSaveData shape changed, so the mission-restart " +
-                          "terrain crash workaround is inactive (TerrainData.GetDetailLayer can kill the process).");
                 return true;
             }
 
@@ -78,9 +76,8 @@ namespace CustomFireSupport
                             data.treeInstances,
                         }));
                     }
-                    catch (Exception e)
+                    catch (Exception)
                     {
-                        Log.Error("terrain snapshot: skipped '" + data.name + "' (" + e.Message + ")");
                     }
                 }
             }
@@ -137,9 +134,6 @@ namespace CustomFireSupport
             {
                 if (limit != null && limit.Terrain != null && !TerrainSnapshotPatch.HasUsableDetailData(limit.Terrain.terrainData))
                 {
-                    Log.Warn("terrain detail: skipped clearing the detail layers of '" + terrainModifier.name +
-                             "' because its terrain reports detail prototypes but no detail data " +
-                             "(TerrainData.GetDetailLayer would kill the process).");
                     return false;
                 }
             }

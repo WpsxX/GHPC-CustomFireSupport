@@ -11,9 +11,6 @@ namespace CustomFireSupport
     /// </summary>
     internal sealed class BatteryProfile
     {
-        /// <summary>Battery name for the log (e.g. "2S3", "M109 Smoke WP").</summary>
-        internal string SourceName = "(unknown)";
-
         internal int Shots = 12;
         internal float InterShotSeconds = 0.7f;
         internal float DispersionMeters = 100f;

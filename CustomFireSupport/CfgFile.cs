@@ -36,14 +36,12 @@ namespace CustomFireSupport
                 string path = Path;
                 if (string.IsNullOrEmpty(path) || !File.Exists(path))
                 {
-                    Log.Warn("config file not found: " + path);
                     return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 }
                 return CfgSectionParser.ParseSection(File.ReadAllText(path), "CustomFireSupport");
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Log.Error("could not read " + Path + ": " + ex.Message);
                 return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             }
         }
@@ -79,9 +77,8 @@ namespace CustomFireSupport
                 File.WriteAllText(path, text);
                 return true;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Log.Error("could not write " + Path + ": " + ex.Message);
                 return false;
             }
         }
@@ -106,9 +103,8 @@ namespace CustomFireSupport
                     return candidate;
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Log.Warn("could not derive the game folder from Application.dataPath: " + ex.Message);
             }
             return System.IO.Path.Combine("UserData", "MelonPreferences.cfg");
         }

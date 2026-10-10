@@ -7,9 +7,7 @@ namespace CustomFireSupport
 {
     /// <summary>
     /// The game's CAS firing chain has three ways to end in "the aircraft flies its pass and drops
-    /// nothing", and every one of them reports itself through <c>UnityEngine.Debug</c> - which
-    /// MelonLoader does not write to the player's log. The player therefore sees a silent no-fire and
-    /// nothing to report; a previous attempt at this mod "fixed" it by bypassing an unrelated gate
+    /// nothing". A previous attempt at this mod "fixed" it by bypassing an unrelated gate
     /// (CasAirframeUnit.IsReady) and that made things worse.
     ///
     /// What the chain actually does, read out of the shipped assembly:
@@ -29,10 +27,9 @@ namespace CustomFireSupport
     ///
     ///   3. CASController.Fire (coroutine)
     ///          if (!_hardpointManager.CanDoAttackType(_finalAttackType)) { EndAttackRun(); yield break; }
-    ///      No log at all.
     ///
     ///   4. CASHardpointManager.Fire(type)
-    ///          if (!_configDone) / (_busyFiring) / (!CanDoAttackType(type)) -> Debug.Log + return.
+    ///          if (!_configDone) / (_busyFiring) / (!CanDoAttackType(type)) -> return.
     ///      _configDone is false whenever CASHardpointManager.HasCriticalConfigError() rejected the
     ///      loadout (a HardpointPrefabs list that is neither one entry nor one entry per attach point),
     ///      and _busyFiring is left true for good if the vanilla MultiFire coroutine is interrupted
@@ -53,8 +50,8 @@ namespace CustomFireSupport
     {
         /// <summary>
         /// True when the controller is flying one of the mod's sorties. Delegates to the hardpoint test
-        /// the rest of the mod uses, so "ours" has exactly one definition: the CustomCasMarker the
-        /// SetLoadout patch puts on the aircraft, or the spawn bookkeeping of the CasAirframeUnit array.
+        /// the rest of the mod uses: the CustomCasMarker applied by SetLoadout, spawn bookkeeping,
+        /// or our runtime-marked missile hardpoints during the early registration window.
         /// </summary>
         internal static bool IsOurSortie(CASController controller)
         {
@@ -75,6 +72,14 @@ namespace CustomFireSupport
             CASHardpoint[] points = manager.GetComponentsInChildren<CASHardpoint>(true);
             for (int i = 0; i < points.Length; i++)
             {
+                // Runtime missile hardpoints are created before the controller's spawn bookkeeping
+                // is always visible to this query. Their name/type marker is authoritative here and
+                // prevents the first AGM call from being treated as a vanilla sortie.
+                if (CasPayloadFactory.IsRuntimeHardpoint(points[i]) &&
+                    points[i].Type == CASAttackType.AirToGroundMissile)
+                {
+                    return true;
+                }
                 if (CasPayloadFactory.IsOurSortie(points[i]))
                 {
                     return true;
@@ -119,17 +124,12 @@ namespace CustomFireSupport
             // when they do not, something rewrote the array between the two, and this says what.
             if (prefabs == null || prefabs.Length == 0)
             {
-                Log.Warn("CAS fire chain: the loadout for '" + manager.gameObject.name +
-                         "' carries no hardpoint prefab at all; the game refuses to configure it, so this " +
-                         "sortie cannot fire because its loadout has no hardpoint prefab.");
                 return false;
             }
             if (!CasFireChainRules.HardpointListFits(prefabs.Length, attachPoints))
             {
                 if (attachPoints == 0)
                 {
-                    Log.Warn("CAS fire chain: '" + manager.gameObject.name +
-                             "' reports no hardpoint attach point; the game refuses to configure it.");
                     return false;
                 }
 
@@ -142,18 +142,10 @@ namespace CustomFireSupport
                 }
                 if (!CustomSlotBuilder.IsOurLoadout(loadout) || first == null)
                 {
-                    Log.Warn("CAS fire chain: loadout '" + loadout.name + "' has " + prefabs.Length +
-                             " hardpoint prefab(s) for " + attachPoints + " attach point(s); the game requires " +
-                             "one entry or one per attach point, so it will refuse to configure this sortie and " +
-                             "the pass is flown dry. Not rewriting it: it is not a loadout this mod built.");
                     return false;
                 }
 
                 body.HardpointPrefabs = new[] { first };
-                Log.Warn("CAS fire chain: loadout '" + loadout.name + "' had " + prefabs.Length +
-                         " hardpoint prefab(s) for " + attachPoints + " attach point(s), which the game refuses " +
-                         "(it wants one entry or one per attach point). Collapsed to the single prefab '" +
-                         first.name + "', which the game reuses on every attach point, so the sortie can fire.");
             }
             return true;
         }
@@ -200,9 +192,8 @@ namespace CustomFireSupport
                     }
                     __result = replacement;
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("CAS fire chain type guard failed: " + ex);
                 }
             }
 

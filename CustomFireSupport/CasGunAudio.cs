@@ -153,15 +153,12 @@ namespace CustomFireSupport
                 string path = FindBundlePath();
                 if (path == null)
                 {
-                    Log.Warn("CAS gun audio: '" + BundleName + "' bundle not found next to the mod; " +
-                             "the gun will fall back to the game's own FMOD shot.");
                     return;
                 }
 
                 _bundle = AssetBundle.LoadFromFile(path);
                 if (_bundle == null)
                 {
-                    Log.Warn("CAS gun audio: could not load '" + path + "' (wrong Unity version?).");
                     return;
                 }
 
@@ -175,9 +172,8 @@ namespace CustomFireSupport
                     }
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Log.Error("CAS gun audio: bundle load failed: " + ex);
             }
         }
 
@@ -321,9 +317,8 @@ namespace CustomFireSupport
                 TrackTail(handle);
                 return handle;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Log.Error("CAS gun audio: could not start the burst sound: " + ex);
                 return null;
             }
         }
@@ -550,9 +545,8 @@ namespace CustomFireSupport
                 // take is therefore chosen once, in Begin, and only the volume follows the distance.
                 return true;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Log.Error("CAS gun audio: could not update the burst sound: " + ex);
                 return false;
             }
         }
@@ -617,9 +611,8 @@ namespace CustomFireSupport
                     }
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Log.Error("CAS gun audio: could not look for the bundle: " + ex);
             }
             return null;
         }

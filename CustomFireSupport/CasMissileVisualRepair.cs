@@ -176,24 +176,9 @@ namespace CustomFireSupport
                     return;
                 }
 
-                int flames = 0;
-                Transform[] nodes = round.GetComponentsInChildren<Transform>(true);
-                for (int t = 0; t < nodes.Length; t++)
-                {
-                    if (nodes[t] != null && nodes[t].name.StartsWith("CFS Motor Flame", StringComparison.Ordinal))
-                    {
-                        flames++;
-                    }
-                }
-                if (flames == 0)
-                {
-                    Log.Warn("CAS missile visual: this round has no motor flame objects, so there is nothing " +
-                             "to burn out (rebuild cas_assets with CasMissileComposer).");
-                }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Log.Error("CAS missile visual repair failed: " + ex);
             }
         }
 

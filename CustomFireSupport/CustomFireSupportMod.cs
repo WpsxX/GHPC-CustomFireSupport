@@ -9,17 +9,17 @@ namespace CustomFireSupport
     /// <summary>
     /// MelonLoader entry point.
     ///
-    /// The mod gives the player up to five fully configurable fire-support slots on the mission map.
+    /// The mod gives the player up to six fully configurable fire-support slots on the mission map.
     /// Everything is driven by UserData/MelonPreferences.cfg:
     ///
     ///   [CustomFireSupport]            global switches (master, hide vanilla buttons, reload key, ...)
-    ///   [CustomFireSupport.Slot1..5]   one support slot each (type, count, shells, timing, CAS loadout)
+    ///   Slot1..6                     one support slot each (type, count, shells, timing, CAS loadout)
     ///
     /// Nothing is hard-coded: see ConfigSchema.cs for every key, its default and its valid range.
     /// </summary>
     public class CustomFireSupportMod : MelonMod
     {
-        /// <summary>Forwarded to the log helper; refreshed every time the config is read.</summary>
+        /// <summary>Initializes the configuration and Harmony patches.</summary>
         public override void OnInitializeMelon()
         {
             try
@@ -27,22 +27,16 @@ namespace CustomFireSupport
                 ConfigSchema.Initialize();
                 HarmonyInstance.PatchAll();
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Log.Error("failed to initialise: " + ex);
             }
         }
 
         public override void OnSceneWasLoaded(int buildIndex, string sceneName)
         {
             CasBundleMaterialRepair.ClearSceneIndex();
-            CustomSupportRegistry.ResetForScene();
-            CasCallReadinessRepair.ResetForScene();
-            CasFlightBehaviourRepair.ResetForScene();
-            // Drop the laser-run holds: they name aircraft transforms of the mission that just ended.
-            CasLaserRunHold.ResetForScene();
-            // Forget the missile attack runs' go-arounds: they name controllers of the mission that ended.
-            CasMissileAttackRun.ResetForScene();
+            // Mission cleanup is hooked to SceneController.LoadSceneByIndex. Loading an additive
+            // scene must not erase live sortie targets or rebuild mission inventories.
             // Earliest safe moment of a session to pull the configured addressable CAS assets into
             // memory (main menu / bootstrap scenes load first). No-op once done or when unconfigured.
             CasPrewarmer.EnsurePrewarmed();
@@ -59,12 +53,10 @@ namespace CustomFireSupport
             try
             {
                 FireSupportPatches.CasTargetSpreadPatch.Tick();
-                CasMissileAttackRun.Tick();
                 CustomSupportRegistry.Tick();
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Log.Error("update failed: " + ex);
             }
 
             // Advance any gun-sound stop tail that is still fading out (see CasGunAudio.End): the tail
@@ -73,9 +65,8 @@ namespace CustomFireSupport
             {
                 CasGunAudio.PumpTails();
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Log.Error("gun audio tail update failed: " + ex);
             }
         }
     }

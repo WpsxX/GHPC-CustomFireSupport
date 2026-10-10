@@ -54,9 +54,6 @@ namespace CustomFireSupport
             Entry(sb, "HideVanillaFireSupport", "true", Pick(lang,
                 "true = 地图上只显示你的槽位（官方炮组/架次数组不动，脚本火力照常）",
                 "true = only your slots show on the map (the vanilla battery / sortie arrays are untouched, scripted fire support still runs)"));
-            Entry(sb, "VerboseLogging", "false", Pick(lang,
-                "true = 把模板发现/槽位解析细节打印到日志",
-                "true = print template discovery / slot parsing details to the log"));
             Entry(sb, "IlluminationOnlyAtNight", "true", Pick(lang,
                 "true = 照明槽位只在夜间出现（默认）；false = 白天也能用",
                 "true = illumination slots appear at night only (default); false = usable by day too"));
@@ -126,14 +123,14 @@ namespace CustomFireSupport
                 "可选：弹药名包含该文本（如 155mm）；留空 = 取该弹种第一个模板",
                 "optional: only rounds whose name contains this text (e.g. 155mm); empty = take the first template of the shell type"));
             Entry(sb, p + "CasFlyover", "\"\"", Pick(lang,
-                "飞行方式：留空 = 按机型自动；也可写 SinglePass（单次通过）| Linger（盘旋约 60 秒）",
-                "flyover profile: empty = automatic per airframe; or SinglePass (one pass) | Linger (circle for about 60 s)"));
+                "飞行方式：当前固定为 SinglePass（单次通过）",
+                "flyover profile: fixed to SinglePass (one pass)"));
             Entry(sb, p + "CasAccuracy", "1.0", Pick(lang,
-                "CAS 落点圆半径 = 值 × 15 米（0–1 之间按百分比；0.5 = 7.5 m，1 = 15 m，>1 更大）：0 = 每一发都飞进目标中心（机炮/火箭弹/炸弹都精确命中）；**对空地导弹无效**——它固定 1 发、永远 100% 命中锁定目标中心；对游戏自带导弹挂载也无效（仍由游戏自己制导）",
-                "CAS impact circle radius = value x 15 m (between 0 and 1 read as a percentage; 0.5 = 7.5 m, 1 = 15 m, >1 larger): 0 = every round flies into the target's centre (guns / rockets / bombs all hit precisely); **does not apply to air-to-ground missiles** - one per sortie, always a 100% hit on the locked target's centre; it does not apply to the game's own missile loadouts either (they stay under the game's guidance)"));
+                "CAS 落点圆半径 = 值 × 15 米（0–1 之间按百分比；0.5 = 7.5 m，1 = 15 m，>1 更大）：0 = 每一发都飞进目标中心（机炮/火箭弹/炸弹都精确命中）；**对空地导弹无效**——它每架次固定挂 2 发，永远 100% 命中各自锁定目标中心；对游戏自带导弹挂载也无效（仍由游戏自己制导）",
+                "CAS impact circle radius = value x 15 m (between 0 and 1 read as a percentage; 0.5 = 7.5 m, 1 = 15 m, >1 larger): 0 = every round flies into the target's centre (guns / rockets / bombs all hit precisely); **does not apply to air-to-ground missiles** - two per sortie, always a 100% hit on each locked target's centre; it does not apply to the game's own missile loadouts either (they stay under the game's guidance)"));
             Entry(sb, p + "CasAttackTypes", "\"" + AttacksFor(n) + "\"", Pick(lang,
-                "攻击方式：Any | 逗号列表 Bombs,Rockets,AirToGroundMissile(AGM/ATGM/Missile),GunRun（只保留机型实际挂载的；空地导弹机型固定为 A-10/MiG-23BN）；留空 = 用机型自带挂载。空空导弹与训练弹（AirToAirMissile / Inert）已移除，写了会被忽略并记警告",
-                "attack types: Any | comma list Bombs,Rockets,AirToGroundMissile(AGM/ATGM/Missile),GunRun (only what the airframe actually carries is kept; the AGM airframes are fixed to A-10 / MiG-23BN); empty = use the airframe's own loadout. Air-to-air missiles and training rounds (AirToAirMissile / Inert) have been removed - writing them is ignored with a warning"));
+                "攻击方式：Any | 逗号列表 Bombs,Rockets,AirToGroundMissile(AGM/ATGM/Missile),GunRun（只保留机型实际挂载的；空地导弹机型为蓝方 A-10、红方 Su-22/Su-25 随机）；留空 = 用机型自带挂载。空空导弹与训练弹（AirToAirMissile / Inert）已移除，写了会被忽略",
+                "attack types: Any | comma list Bombs,Rockets,AirToGroundMissile(AGM/ATGM/Missile),GunRun (only what the airframe actually carries is kept; AGM uses A-10 on Blue and randomly selects Su-22 or Su-25 on Red); empty = use the airframe's own loadout. Air-to-air missiles and training rounds (AirToAirMissile / Inert) have been removed - writing them is ignored"));
             sb.AppendLine(Pick(lang,
                 "# 机型 / 弹药 / 生成高度 / 入射角 / 来向 / 再装填全部交给游戏自己处理，不用配",
                 "# airframe / ammo / spawn altitude / impact angle / approach direction / reload are all left to the game - nothing to configure"));

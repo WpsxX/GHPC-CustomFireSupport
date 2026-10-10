@@ -2,8 +2,8 @@ namespace CustomFireSupport
 {
     /// <summary>
     /// Static knowledge about the game's CAS aircraft, extracted from the shipped prefabs / loadouts
-    /// (Assets\PrefabHierarchyObject: A10, F104, F4_LW, F4_USAF, MiG17, MiG21, MiG23BN, SU22 - and the
-    /// loadout asset names seen in mission logs, e.g. "F-104G Rockets", "F4 2x triple Mk82",
+    /// (Assets\PrefabHierarchyObject: A10, F104, F4_LW, F4_USAF, MiG17, MiG21, MiG23BN, SU22, SU25 - and the
+    /// loadout asset names found in the shipped content, e.g. "F-104G Rockets", "F4 2x triple Mk82",
     /// "MiG-21 FAB-250 only").
     ///
     /// It is used for four things:
@@ -27,7 +27,6 @@ namespace CustomFireSupport
     {
         internal string Pattern;
         internal AirframeSide Side;
-        internal FlyoverKind Flyover;
     }
 
     internal static class CasAirframeCatalog
@@ -38,48 +37,48 @@ namespace CustomFireSupport
             // ---- Blue / NATO ------------------------------------------------
             new AirframeInfo
             {
-                Pattern = "a10", Side = AirframeSide.Nato, Flyover = FlyoverKind.Linger
+                Pattern = "a10", Side = AirframeSide.Nato
             },
             new AirframeInfo
             {
-                Pattern = "a-10", Side = AirframeSide.Nato, Flyover = FlyoverKind.Linger
+                Pattern = "a-10", Side = AirframeSide.Nato
             },
             new AirframeInfo
             {
-                Pattern = "f4", Side = AirframeSide.Nato, Flyover = FlyoverKind.SinglePass
+                Pattern = "f4", Side = AirframeSide.Nato
             },
             new AirframeInfo
             {
-                Pattern = "f-4", Side = AirframeSide.Nato, Flyover = FlyoverKind.SinglePass
+                Pattern = "f-4", Side = AirframeSide.Nato
             },
             new AirframeInfo
             {
-                Pattern = "f104", Side = AirframeSide.Nato, Flyover = FlyoverKind.SinglePass
+                Pattern = "f104", Side = AirframeSide.Nato
             },
             new AirframeInfo
             {
-                Pattern = "f-104", Side = AirframeSide.Nato, Flyover = FlyoverKind.SinglePass
+                Pattern = "f-104", Side = AirframeSide.Nato
             },
             // ---- Red / Warsaw Pact ------------------------------------------
             new AirframeInfo
             {
-                Pattern = "mig", Side = AirframeSide.Pact, Flyover = FlyoverKind.SinglePass
+                Pattern = "mig", Side = AirframeSide.Pact
             },
             new AirframeInfo
             {
-                Pattern = "su22", Side = AirframeSide.Pact, Flyover = FlyoverKind.SinglePass
+                Pattern = "su22", Side = AirframeSide.Pact
             },
             new AirframeInfo
             {
-                Pattern = "su-22", Side = AirframeSide.Pact, Flyover = FlyoverKind.SinglePass
+                Pattern = "su-22", Side = AirframeSide.Pact
             },
             new AirframeInfo
             {
-                Pattern = "su25", Side = AirframeSide.Pact, Flyover = FlyoverKind.Linger
+                Pattern = "su25", Side = AirframeSide.Pact
             },
             new AirframeInfo
             {
-                Pattern = "su-25", Side = AirframeSide.Pact, Flyover = FlyoverKind.Linger
+                Pattern = "su-25", Side = AirframeSide.Pact
             },
         };
 
@@ -291,12 +290,6 @@ namespace CustomFireSupport
         /// </summary>
         internal const float CruiseSpeedMetersPerSecond = CruiseMach * SpeedOfSoundSeaLevelMetersPerSecond;
 
-        /// <summary>Mach number of a speed, for the log ("Mach 1.2"). Unit-testable, hence kept here.</summary>
-        internal static float MachOf(float metersPerSecond)
-        {
-            return metersPerSecond / SpeedOfSoundSeaLevelMetersPerSecond;
-        }
-
         /// <summary>
         /// What kind of warhead a missile carries. Kept as the catalog's own enum (like
         /// <see cref="AirframeSide"/>) so this file stays free of the game's assemblies and remains
@@ -347,7 +340,7 @@ namespace CustomFireSupport
         /// </summary>
         internal sealed class MissileProfile
         {
-            /// <summary>Human readable name for the log, e.g. "AGM-65 Maverick".</summary>
+            /// <summary>Stable identifier used to match the synthesized round to its missile profile.</summary>
             internal string MissileId;
 
             /// <summary>
@@ -443,6 +436,18 @@ namespace CustomFireSupport
             // pops up over the line of sight and then comes down hard. Every field below exists because
             // one of those two behaviours needs it, and the two profiles set opposite values for most of
             // them on purpose.
+            //
+            // TRACKING. What a round can do about a target that MOVES is three things, and the knobs for
+            // all three are here or in CasMissileGuidance:
+            //   * the lead - CasMissileGuidance now flies a ground target's predicted intercept instead
+            //     of its live centre, faded in above ~4 m/s of measured target speed (its
+            //     GroundLeadMinSpeed / GroundLeadFullSpeed), which is what makes a crossing vehicle
+            //     catchable at all. Nothing per weapon;
+            //   * the turn rates below (Cruise / Terminal, and the Air triple for a helicopter) - how
+            //     hard the round may pull onto that intercept. These are the numbers to raise or lower
+            //     for "the missile tracks better / more calmly";
+            //   * the loft and TerminalRangeMeters above, which decide how much of the flight is spent
+            //     climbing rather than closing the range.
             // ------------------------------------------------------------------
 
             /// <summary>
@@ -563,7 +568,7 @@ namespace CustomFireSupport
             //     now uses the SLANT range for an air target);
             //   * a crossing helicopter at 60-80 m/s moves hundreds of metres during a 3-6 second flight,
             //     and one correction pass leaves most of that as lag (the lead is now iterated);
-            //   * the ground trajectory's whole shape - a pull-up into a 90-160 m arch, then a 30-80 degree
+            //   * the ground trajectory's whole shape - a pull-up into a 90-100 m arch, then a 30-80 degree
             //     dive - aims the round at a point above a target that is already up there (an air target
             //     is flown as a straight 3-D lead pursuit);
             //   * the cruise turn rate that makes the AGM-65's approach look like "a bent wire" (12 deg/s)
@@ -726,10 +731,12 @@ namespace CustomFireSupport
             LoftHeightMeters = 90f,
             TerminalDiveDegrees = 30f,
             TerminalRangeMeters = 800f,
-            // "迅速抬高机头" at full thrust, then "像一条被拉弯的钢丝" for the rest of the flight.
+            // "迅速抬高机头" at full thrust, then "像一条被拉弯的钢丝" for the rest of the flight. The two
+            // tracking numbers below are the AGM's own: raised from 12/22 to 18/30 to tighten the pursuit
+            // (see the tracking note on MissileProfile), still the calmest of the two rounds.
             BoostTurnRateDegreesPerSecond = 45f,
-            CruiseTurnRateDegreesPerSecond = 12f,
-            TerminalTurnRateDegreesPerSecond = 22f,
+            CruiseTurnRateDegreesPerSecond = 18f,
+            TerminalTurnRateDegreesPerSecond = 30f,
             // A Maverick is a short-range weapon by air-to-ground missile standards, but it still needs a
             // launch envelope: under ~900 m the aircraft is firing at something almost under its nose.
             MinimumLaunchRangeMeters = 250f,
@@ -748,14 +755,14 @@ namespace CustomFireSupport
             AirHandoverDistanceMeters = 6f,
             AirPassGuardDistanceMeters = 80f,
             AirBoostTurnRateDegreesPerSecond = 45f,
-            AirCruiseTurnRateDegreesPerSecond = 30f,
-            AirTerminalTurnRateDegreesPerSecond = 45f,
+            AirCruiseTurnRateDegreesPerSecond = 38f,
+            AirTerminalTurnRateDegreesPerSecond = 55f,
             AirLeadIterations = 3,
             AirTargetVelocityClampMeters = 200f
         };
 
         /// <summary>
-        /// Red missile, pinned to the MiG-23BN, flying the game's own Soviet missile visual with the TOW
+        /// Red missile, carried by the Su-22 or Su-25, flying the game's own Soviet missile visual with the TOW
         /// flight effects. Uniformly named "Kh-25" - the name is an identifier, not a claim about which
         /// in-game asset it is: GHPC ships no separate Soviet air-to-ground missile asset (no mesh, no
         /// prefab, no ammo - a full scan of GHPC_Data and of every installed mod bundle finds none), so the
@@ -763,20 +770,19 @@ namespace CustomFireSupport
         /// Flown at 450 m/s with a 90 kg high-explosive warhead.
         ///
         /// FLIGHT: "暴烈的尖锐窜动，先抬后砸" - the motor is a single high-thrust stage (four seconds of
-        /// it, most of the flight), the round pops up over the sight line (the "山坡 / Gorka", high enough
-        /// that its own laser is not looking through the dust it kicked up), it stays high instead of
-        /// gliding down, and the last stretch is a hard, near-straight slam. Its control authority is more
-        /// than four times the AGM-65's, which is what "鸭翼剧烈偏转" looks like.
+        /// it, most of the flight), the round pops up over the sight line (the "山坡 / Gorka"), it stays
+        /// high instead of gliding down, and the last stretch is a hard, near-straight slam. Its control
+        /// authority is more than four times the AGM-65's, which is what "鸭翼剧烈偏转" looks like.
         ///
         /// The laser is the whole weapon: the carrier has to hold its run with the nose within 35 degrees
-        /// of the spot until the round lands (CasLaserRunHold keeps the AI aircraft on that run and reports
-        /// it in the log), and a beam that breaks takes the round's control with it.
+        /// of the spot until the round lands (CasLaserRunHold keeps the AI aircraft on that run), and a
+        /// beam that breaks takes the round's control with it.
         ///
         /// Its loft and taper are scaled to the game's ranges on the same basis as the AGM's (260 m / 600 m
-        /// became 160 m / 700 m): the pop-up still happens and is still visibly higher than the AGM's, but
-        /// it no longer puts 218-270 m of climb under a 1.8-2.6 km shot, and the arrival angle comes down
-        /// from -73 deg average to about -46 deg - still the near-vertical slam of the brief, without the
-        /// round running out of geometry before it gets there.
+        /// became 160 m / 700 m, and the loft is 100 m since the "lower the pop-up" pass): the pop-up still
+        /// happens - just above the AGM's 90 m arch - but it no longer puts 218-270 m of climb under a
+        /// 1.8-2.6 km shot, and the arrival angle comes down from -73 deg average to well under the -46 deg
+        /// the 160 m loft gave, still a near-vertical slam without the round running out of geometry.
         /// </summary>
         internal static readonly MissileProfile PactMissile = new MissileProfile
         {
@@ -790,17 +796,21 @@ namespace CustomFireSupport
             // the run for the flight (that is the "危险的伴飞过程" of the brief, not a cosmetic detail).
             Guidance = GuidanceKind.LaserBeamRider,
             MotorBurnSeconds = 5f,
-            // A lower pull-up than the AGM, but held longer and with a much higher loft under it.
+            // A lower pull-up than the AGM, but held longer. The loft used to be 160 m (a clear pop-up
+            // over the line of sight); it is 100 m now, just above the AGM's 90 m, so the round still
+            // rises over the sight line and dives onto the target but no longer spends the first half of
+            // the flight climbing.
             BoostClimbDegrees = 12f,
-            LoftHeightMeters = 160f,
+            LoftHeightMeters = 100f,
             // High enough not to bind: the dive is as steep as the geometry allows, and the loft is what
             // makes that steep.
             TerminalDiveDegrees = 80f,
             TerminalRangeMeters = 700f,
             BoostTurnRateDegreesPerSecond = 60f,
-            CruiseTurnRateDegreesPerSecond = 18f,
-            // "鸭翼剧烈偏转，以近乎笔直的角度强行把机头硬掰朝向激光反射点".
-            TerminalTurnRateDegreesPerSecond = 55f,
+            CruiseTurnRateDegreesPerSecond = 28f,
+            // "鸭翼剧烈偏转，以近乎笔直的角度强行把机头硬掰朝向激光反射点". Raised from 18/55 to 28/68 with the
+            // rest of the tracking pass.
+            TerminalTurnRateDegreesPerSecond = 68f,
             // The laser needs the round to fly long enough for the carrier to hold its run, and the brief's
             // Kh-25 is a stand-off weapon: a release under ~1.5 km leaves the aircraft shooting at something
             // it is already flying past. The aircraft goes around instead (CasMissileAttackRun).
@@ -823,8 +833,8 @@ namespace CustomFireSupport
             AirHandoverDistanceMeters = 6f,
             AirPassGuardDistanceMeters = 90f,
             AirBoostTurnRateDegreesPerSecond = 60f,
-            AirCruiseTurnRateDegreesPerSecond = 35f,
-            AirTerminalTurnRateDegreesPerSecond = 55f,
+            AirCruiseTurnRateDegreesPerSecond = 45f,
+            AirTerminalTurnRateDegreesPerSecond = 65f,
             AirLeadIterations = 3,
             AirTargetVelocityClampMeters = 200f
         };
@@ -859,9 +869,10 @@ namespace CustomFireSupport
 
         // Blue: the A-10 carries the AGM-65 model on its pylons.
         private static readonly string[] NatoMissileAirframes = { "a-10", "a10" };
-        // Red: the MiG-23BN, plus the Su-25 (the player's own model, reconstructed by CasSu25Build), which
-        // carries the Kh-25 as a symmetric pair.
-        private static readonly string[] PactMissileAirframes = { "mig-23bn", "mig23bn", "mig 23bn", "su25", "su-25" };
+        // Red: both the Su-22 and Su-25 can carry the Kh-25 pair. The aliases are kept as separate
+        // patterns only where they identify the same model; these four entries deliberately expose
+        // two distinct airframe families to CustomSlotBuilder's random draw.
+        private static readonly string[] PactMissileAirframes = { "su22", "su-22", "su25", "su-25" };
 
         /// <summary>One missile, on the first station - the layout for airframes with a single AGM station.</summary>
         private static readonly int[] SingleMissileStation = { 0 };
@@ -881,10 +892,10 @@ namespace CustomFireSupport
         private static readonly int[] A10MissileStations = { 2, 8 };
 
         /// <summary>
-        /// The MiG-23BN's Kh-25 pair: its four attach points are left wing root (0), left belly (1),
+        /// The Su-22's Kh-25 pair: its four attach points are left wing root (0), left belly (1),
         /// right belly (2) and right wing root (3), so 0 and 3 are the symmetric wing pair.
         /// </summary>
-        private static readonly int[] MiG23BNMissileStations = { 0, 3 };
+        private static readonly int[] Su22MissileStations = { 0, 3 };
 
         /// <summary>
         /// Which attach points an air-to-ground missile is mounted on, as indices into the airframe's own
@@ -911,17 +922,17 @@ namespace CustomFireSupport
                 {
                     return A10MissileStations;
                 }
-                if (lower.Contains("mig23bn") || lower.Contains("mig-23bn"))
+                if (lower.Contains("su22") || lower.Contains("su-22"))
                 {
-                    return MiG23BNMissileStations;
+                    return Su22MissileStations;
                 }
             }
             return SingleMissileStation;
         }
 
         /// <summary>
-        /// True for the aircraft a missile slot may fly on the given side: the A-10 (Blue) and the MiG-23BN
-        /// plus the Su-25 (Red). A missile slot DRAWS among these rather than being pinned to one.
+        /// True for the aircraft a missile slot may fly on the given side: the A-10 (Blue), or the
+        /// Su-22/Su-25 pair (Red). A missile slot is restricted to these designated aircraft per side.
         /// </summary>
         internal static bool IsMissileAirframe(string airframeName, AirframeSide side)
         {
@@ -1010,7 +1021,7 @@ namespace CustomFireSupport
         /// </summary>
         internal sealed class GunProfile
         {
-            /// <summary>Human-readable gun id for logs, e.g. "GAU-8/Avenger 30mm".</summary>
+            /// <summary>Human-readable gun id, e.g. "GAU-8/Avenger 30mm".</summary>
             internal string GunId;
 
             /// <summary>Keywords matched (case-insensitive) against loaded AmmoCodexScriptable names.</summary>

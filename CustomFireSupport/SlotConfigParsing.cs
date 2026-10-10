@@ -34,8 +34,7 @@ namespace CustomFireSupport
     /// <summary>CAS flyover profile (mirrors CasAirframeUnit.FlyoverType).</summary>
     public enum FlyoverKind
     {
-        SinglePass,
-        Linger
+        SinglePass
     }
 
     /// <summary>
@@ -53,8 +52,8 @@ namespace CustomFireSupport
     /// <summary>
     /// Pure, dependency-free config parsing / validation. It deliberately knows nothing about
     /// MelonLoader or the game assemblies, which is what makes it unit-testable outside the game
-    /// (see tests/ConfigParsingTests). Every parse method is total: unknown input never throws,
-    /// it falls back to a documented default and reports the problem through an out parameter.
+    /// (see tests/ConfigParsingTests). Every parse method is total: unknown input never throws;
+    /// it falls back to a documented default.
     /// </summary>
     public static class SlotConfigParsing
     {
@@ -132,27 +131,6 @@ namespace CustomFireSupport
         }
 
         /// <summary>
-        /// True for the helicopter CAS type names the mod used to accept. The helicopter support was
-        /// removed again, so these are no longer valid - the test only exists to explain the removal in
-        /// the log instead of reporting a generic "unknown Type".
-        /// </summary>
-        public static bool IsRemovedHelicopterType(string raw)
-        {
-            switch (Normalize(raw))
-            {
-                case "cashelisupport":
-                case "casheli":
-                case "heli":
-                case "helicopter":
-                case "rotary":
-                case "rotarywing":
-                case "chopper":
-                    return true;
-                default:
-                    return false;
-            }
-        }
-
         /// <summary>
         /// True for the CAS attack type names the mod used to accept and no longer offers:
         ///
@@ -162,8 +140,7 @@ namespace CustomFireSupport
         ///
         /// Both values still exist in GHPC's own CASAttackType enum, and a mission loadout may still
         /// declare them; this only keeps them out of the config surface and out of every payload the mod
-        /// builds. The test exists so the log can explain the removal instead of reporting a bare
-        /// "unknown attack type".
+        /// builds.
         /// </summary>
         public static bool IsRemovedAttackType(string raw)
         {
@@ -275,13 +252,6 @@ namespace CustomFireSupport
                     flyover = FlyoverKind.SinglePass;
                     return true;
 
-                case "linger":
-                case "loiter":
-                case "orbit":
-                case "stay":
-                    flyover = FlyoverKind.Linger;
-                    return true;
-
                 default:
                     flyover = FlyoverKind.SinglePass;
                     return false;
@@ -291,22 +261,18 @@ namespace CustomFireSupport
         /// <summary>
         /// Parses a comma / semicolon separated attack-type list. An empty list, "Any" or "*" means
         /// "keep every attack type the template aircraft supports" (the safe default). Unknown tokens
-        /// are skipped and reported through <paramref name="problems"/>; so are the names of attack
-        /// types the mod no longer offers (air-to-air missile, training round), which get an explicit
-        /// "no longer supported" note instead of a bare "unknown". A list that consists only of
+        /// and the names of attack types the mod no longer offers (air-to-air missile, training round)
+        /// are skipped. A list that consists only of
         /// rejected tokens is treated as "Any" so a typo can never produce an unfireable aircraft.
         /// </summary>
-        public static AttackKind[] ParseAttackList(string raw, out string problems)
+        public static AttackKind[] ParseAttackList(string raw)
         {
-            problems = null;
             if (string.IsNullOrEmpty(raw) || Normalize(raw) == "any" || raw.Trim() == "*")
             {
                 return new AttackKind[0];
             }
 
             List<AttackKind> parsed = new List<AttackKind>();
-            List<string> unknown = new List<string>();
-            List<string> removed = new List<string>();
             string[] tokens = raw.Split(new char[] { ',', ';', '|' }, StringSplitOptions.RemoveEmptyEntries);
             for (int i = 0; i < tokens.Length; i++)
             {
@@ -328,35 +294,6 @@ namespace CustomFireSupport
                         parsed.Add(attack);
                     }
                 }
-                else if (IsRemovedAttackType(token))
-                {
-                    removed.Add(token);
-                }
-                else
-                {
-                    unknown.Add(token);
-                }
-            }
-
-            if (removed.Count > 0 || unknown.Count > 0)
-            {
-                StringBuilder builder = new StringBuilder();
-                if (removed.Count > 0)
-                {
-                    builder.Append("no longer supported (the mod dropped air-to-air missiles and training " +
-                                   "rounds), ignored: ");
-                    Join(builder, removed);
-                }
-                if (unknown.Count > 0)
-                {
-                    if (builder.Length > 0)
-                    {
-                        builder.Append("; ");
-                    }
-                    builder.Append("unknown, ignored: ");
-                    Join(builder, unknown);
-                }
-                problems = builder.ToString();
             }
 
             if (parsed.Count == 0)
@@ -366,18 +303,6 @@ namespace CustomFireSupport
                 return new AttackKind[0];
             }
             return parsed.ToArray();
-        }
-
-        private static void Join(StringBuilder builder, List<string> items)
-        {
-            for (int i = 0; i < items.Count; i++)
-            {
-                if (i > 0)
-                {
-                    builder.Append(", ");
-                }
-                builder.Append(items[i]);
-            }
         }
 
         public static bool TryParseAttack(string raw, out AttackKind attack)
@@ -443,25 +368,6 @@ namespace CustomFireSupport
         }
 
         /// <summary>
-        /// True when the configured shell type is consistent with the configured button type. A smoke
-        /// or illumination button firing HE is almost certainly a config mistake, so the caller logs a
-        /// warning (the value is still honoured - the user may have a reason).
-        /// </summary>
-        public static bool MunitionMatchesSlotKind(SlotKind kind, MunitionKind munition)
-        {
-            switch (kind)
-            {
-                case SlotKind.ArtillerySmoke:
-                    return munition == MunitionKind.Smoke;
-                case SlotKind.ArtilleryIllumination:
-                    return munition == MunitionKind.Illumination;
-                case SlotKind.Artillery:
-                    return munition != MunitionKind.Smoke && munition != MunitionKind.Illumination;
-                default:
-                    return true;
-            }
-        }
-
         // ------------------------------------------------------------------
         // Range clamping
         // ------------------------------------------------------------------
@@ -529,41 +435,6 @@ namespace CustomFireSupport
                 return min;
             }
             return value > max ? max : value;
-        }
-
-        // ------------------------------------------------------------------
-        // Canonical names for logging / round-tripping
-        // ------------------------------------------------------------------
-
-        public static string ToConfigName(SlotKind kind)
-        {
-            switch (kind)
-            {
-                case SlotKind.ArtillerySmoke:
-                    return "ArtillerySmoke";
-                case SlotKind.ArtilleryIllumination:
-                    return "ArtilleryIllumination";
-                case SlotKind.CasFixedWing:
-                    return "CASSupport";
-                default:
-                    return "Artillery";
-            }
-        }
-
-        public static string ToConfigName(MunitionKind munition)
-        {
-            return munition.ToString();
-        }
-
-        public static string ToConfigName(AttackKind attack)
-        {
-            switch (attack)
-            {
-                case AttackKind.AirToGroundMissile:
-                    return "AirToGroundMissile";
-                default:
-                    return attack.ToString();
-            }
         }
 
         private static string Normalize(string raw)

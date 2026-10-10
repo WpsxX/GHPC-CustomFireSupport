@@ -14,7 +14,7 @@
 >   
 > 依赖：MelonLoader 0.6.x + Harmony（随 MelonLoader 附带）
 >   
-> 版本：**v1.0.6**
+> 版本：**v1.0.7**
 
 本 mod 在任务地图的「火力支援」面板上提供 **6 个可自定义槽位**。
   
@@ -65,8 +65,6 @@
      
    内容与它完全一致，可以直接覆盖那一段。
 
-   日志关键字：`[CustomFireSupport]`；日志文件：`Bin\MelonLoader\Latest.log`。
-
 ---
 
 ## 1. 书写约定
@@ -95,7 +93,6 @@
 | `HideVanillaFireSupport`  | 布尔  | `true`   | `true` / `false`        | `true` = 地图面板只显示你的槽位。官方炮组/架次数据本身不被修改，任务脚本安排的炮击/空袭照常执行，只是按钮不显示。                          |
 | `IlluminationOnlyAtNight` | 布尔  | `true`   | `true` / `false`        | `true` = 照明槽位只在夜间出现（白天自动隐藏）；`false` = 白天也能用。                                            |
 | `SmokeOnlyDuringDay`      | 布尔  | `true`   | `true` / `false`        | `true` = 烟幕槽位只在白天出现（夜间自动隐藏）；`false` = 全天可用。                                             |
-| `VerboseLogging`          | 布尔  | `false`  | `true` / `false`        | `true` = 把模板发现、槽位解析等排障细节打印到日志。                                                          |
 | `CasDeployDistanceMeters` | 小数  | `8000.0` | `100` ~ `60000`         | 仅用于**关卡没有自带 CAS 管理器**的任务：飞机起飞/脱离点离玩家起始位置多远（米）。                                          |
 | `CasDeployBearingDegrees` | 小数  | `180.0`  | `0` ~ `360`（超出按 360 回绕） | 上述起飞点的方位角（度）。`0` = +Z（北），顺时针增大。                                                         |
 | `CasPrewarmKeys`          | 字符串 | `"auto"` | `auto` / 逗号或分号分隔的键名 / 空 | 会话启动时额外预加载的资源键。`auto` = 不额外加载（CAS 机型/挂载/硬点与烟幕照明都由 `cas_assets` 资产包提供，无需额外键）；留空 = 关闭该功能。 |
@@ -175,7 +172,7 @@
 | `Bombs`              | `Bomb`                      | 航弹                               |
 | `Rockets`            | `Rocket`                    | 火箭弹                              |
 | `GunRun`             | `Gun` / `Strafe` / `Cannon` | 航炮扫射                             |
-| `AirToGroundMissile` | `AGM` / `ATGM` / `Missile`  | 空地导弹： A-10 / MiG-23BN，每架次固定 1 发、 |
+| `AirToGroundMissile` | `AGM` / `ATGM` / `Missile`  | 空地导弹：蓝方 A-10（AGM-65）/ 红方 Su-22 或 Su-25 随机（Kh-25），每架次固定挂 2 发 |
 
 ### 4.5 `CasFlyover`（CAS 飞行方式）
 
@@ -208,6 +205,12 @@
 
 ---
 ## 6. 更新日志
+
+### v1.0.7
+
+- 修复 bug。
+- 优化性能。
+- 添加 AGM-65 的多目标打击能力。
 
 ### v1.0.6
 

@@ -35,6 +35,9 @@ namespace CustomFireSupport
             internal IMapSupportInfo Info;
             /// <summary>Button label; differs from Config.DisplayName when one CAS slot split into several sorties.</summary>
             internal string DisplayName;
+            internal GameObject Button;
+            internal int ButtonAttempts;
+            internal int NextButtonAttemptFrame;
         }
 
         private static readonly List<ArtillerySlot> _artillery = new List<ArtillerySlot>();
@@ -69,6 +72,13 @@ namespace CustomFireSupport
         private static bool _hideVanillaThisMission;
         private static bool _playerCasCall;
         private static bool _markNextSortie;
+        private static MapController _buttonMap;
+        private static MapFireSupportPanel _buttonPanel;
+        private static bool _pendingButtonLayout;
+        private static int _layoutAttempts;
+        private static int _nextLayoutAttemptFrame;
+        private const int MaxButtonAttempts = 3;
+        private const int ButtonRetryFrames = 30;
 
         /// <summary>
         /// True once the slots of the current mission have been built. PrepareMission runs from the
@@ -86,6 +96,10 @@ namespace CustomFireSupport
             AccessTools.FieldRefAccess<MapFireSupportPanel, object>("_supportIconMapping");
         private static readonly AccessTools.FieldRef<MapFireSupportPanel, List<Button>> PanelButtonsRef =
             AccessTools.FieldRefAccess<MapFireSupportPanel, List<Button>>("_buttons");
+        private static readonly AccessTools.FieldRef<MapFireSupportPanel, ScrollRect> PanelScrollRef =
+            AccessTools.FieldRefAccess<MapFireSupportPanel, ScrollRect>("_scrollRect");
+        private static readonly Action<MapFireSupportPanel> UpdateScrollButtons =
+            AccessTools.MethodDelegate<Action<MapFireSupportPanel>>(AccessTools.Method(typeof(MapFireSupportPanel), "OnScrollComplete"));
         private static readonly AccessTools.FieldRef<MapController, FireMissionManager> MapFireManagerRef =
             AccessTools.FieldRefAccess<MapController, FireMissionManager>("_fireMissionManager");
         private static readonly AccessTools.FieldRef<MapController, CasSupportManager> MapCasManagerRef =
@@ -117,13 +131,14 @@ namespace CustomFireSupport
         /// opening the map in flight creates one. Re-running the preparation there would re-harvest every
         /// battery and re-scan every loaded object mid-mission - wasteful, and dangerous, because that scan
         /// is what crashed the game in GameObject.get_scene (see FireSupportTemplates.FindLoadedPrefab).
-        /// The slots are already built, so the second call is a no-op;
+        /// The slots are already built, so later calls only queue replacement map UI;
         /// CustomSupportRegistry.ResetForScene clears the flag for the next mission.
         /// </summary>
         internal static void PrepareMission(MapController mapController)
         {
             if (_preparedThisMission)
             {
+                QueueButtonsForMap(mapController);
                 return;
             }
             _preparedThisMission = true;
@@ -138,17 +153,16 @@ namespace CustomFireSupport
                 // and only rebuilt on the next mission start.
                 ConfigSchema.Refresh();
                 _global = ConfigSchema.ReadGlobal();
+                // Also clear when support is disabled, including first-load bootstrap paths.
+                CasAttackLibrary.Reset();
+                CustomSlotBuilder.ResetLoadouts();
+                CasPayloadFactory.ResetForMission();
                 if (!_global.Enabled)
                 {
                     return;
                 }
 
                 _playerFaction = ResolvePlayerFaction();
-                // Each mission re-indexes the CAS hardpoint library from whatever is loaded *now*
-                // (mission airframes + loadout assets); the previous mission's payloads are gone.
-                CasAttackLibrary.Reset();
-                CustomSlotBuilder.ResetLoadouts();
-
                 // Pull the configured addressable CAS assets into memory if the first scene load
                 // (menu) has not already done so - they then feed the donor scan and the library
                 // below even when this mission offers no CAS of its own.
@@ -191,13 +205,18 @@ namespace CustomFireSupport
                     {
                         continue;
                     }
-                    BuildSlot(config, ammo, casTemplates);
+                    try
+                    {
+                        BuildSlot(config, ammo, casTemplates);
+                    }
+                    catch (Exception)
+                    {
+                    }
                 }
 
                 if (_built.Count == 0)
                 {
                     _hideVanillaThisMission = false;
-                    Log.Warn("no custom slot could be built for this mission - vanilla fire support is left untouched.");
                     return;
                 }
 
@@ -206,13 +225,12 @@ namespace CustomFireSupport
                 CorrectPlayerFaction();
                 InjectArtillery();
                 InjectAirframes();
-                _pendingButtons = true;
+                QueueButtonsForMap(mapController);
 
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 _hideVanillaThisMission = false;
-                Log.Error("failed to prepare custom fire support: " + ex);
             }
         }
 
@@ -230,11 +248,9 @@ namespace CustomFireSupport
 
             if (config.IsCas)
             {
-                string failure;
-                CasSlot slot = CustomSlotBuilder.BuildCas(config, casTemplates, _playerFaction, out failure);
+                CasSlot slot = CustomSlotBuilder.BuildCas(config, casTemplates, _playerFaction);
                 if (slot == null)
                 {
-                    Log.Warn("slot " + config.Index + " disabled: " + failure);
                     return;
                 }
                 _cas.Add(slot);
@@ -242,11 +258,9 @@ namespace CustomFireSupport
                 return;
             }
 
-            string artilleryFailure;
-            ArtillerySlot artillerySlot = CustomSlotBuilder.BuildArtillery(config, ammo, _playerFaction, out artilleryFailure);
+            ArtillerySlot artillerySlot = CustomSlotBuilder.BuildArtillery(config, ammo, _playerFaction);
             if (artillerySlot == null)
             {
-                Log.Warn("slot " + config.Index + " disabled: " + artilleryFailure);
                 return;
             }
             _artillery.Add(artillerySlot);
@@ -357,7 +371,65 @@ namespace CustomFireSupport
         internal static void Tick()
         {
             EnsureCreatedCasDeployPoints();
+            if (_preparedThisMission && MapController.Instance != null)
+                QueueButtonsForMap(MapController.Instance);
             CreateButtonsIfReady();
+        }
+
+        private static void QueueButtonsForMap(MapController map)
+        {
+            if (map == null || !_global.Enabled || _built.Count == 0) return;
+            MapFireSupportPanel panel = map.FireSupportPanel;
+            if (ReferenceEquals(_buttonMap, map) && ReferenceEquals(_buttonPanel, panel))
+            {
+                for (int i = 0; i < _built.Count; i++)
+                {
+                    BuiltSlot slot = _built[i];
+                    if (!ReferenceEquals(slot.Button, null) && slot.Button == null)
+                    {
+                        _buttons.Remove(slot.Button);
+                        slot.Button = null;
+                        slot.ButtonAttempts = 0;
+                        slot.NextButtonAttemptFrame = 0;
+                        _pendingButtons = true;
+                        _buttonsCreated = false;
+                    }
+                }
+                return;
+            }
+
+            // Only replace the UI. Sorties, missions remaining and their loadouts stay intact.
+            ClearButtons();
+            _buttonMap = map;
+            _buttonPanel = panel;
+            _buttonWaitFrames = 0;
+            _buttonsCreated = false;
+            _pendingButtons = true;
+        }
+
+        private static void ClearButtons()
+        {
+            List<Button> panelButtons = _buttonPanel != null ? PanelButtonsRef(_buttonPanel) : null;
+            for (int i = 0; i < _buttons.Count; i++)
+            {
+                GameObject instance = _buttons[i];
+                if (instance == null) continue;
+                Button button = instance.GetComponent<Button>();
+                if (panelButtons != null && button != null) panelButtons.Remove(button);
+                instance.SetActive(false);
+                instance.transform.SetParent(null, false);
+                UnityEngine.Object.Destroy(instance);
+            }
+            _buttons.Clear();
+            for (int i = 0; i < _built.Count; i++)
+            {
+                _built[i].Button = null;
+                _built[i].ButtonAttempts = 0;
+                _built[i].NextButtonAttemptFrame = 0;
+            }
+            _pendingButtonLayout = false;
+            _layoutAttempts = 0;
+            _nextLayoutAttemptFrame = 0;
         }
 
         internal static void CreateButtonsIfReady()
@@ -384,47 +456,76 @@ namespace CustomFireSupport
                 {
                     return;
                 }
-                Log.Warn("the map never reported itself initialised after " + _buttonWaitFrames +
-                         " frames; creating the custom fire-support buttons anyway.");
             }
 
             MapFireSupportPanel panel = map.FireSupportPanel;
-            if (panel == null)
+            ScrollRect scroll = panel != null ? PanelScrollRef(panel) : null;
+            if (scroll == null || scroll.content == null)
             {
-                Log.Warn("map fire support panel not found; custom buttons were not created.");
-                _pendingButtons = false;
+                // The panel may become available later; do not consume any slot's retry budget.
                 return;
             }
 
-            _buttonsCreated = true;
-            _pendingButtons = false;
-
+            bool waiting = false;
+            bool changed = false;
             for (int i = 0; i < _built.Count; i++)
             {
-                CreateButton(map, panel, _built[i]);
+                BuiltSlot slot = _built[i];
+                if (slot.Button != null || slot.ButtonAttempts >= MaxButtonAttempts) continue;
+                if (Time.frameCount >= slot.NextButtonAttemptFrame)
+                {
+                    slot.ButtonAttempts++;
+                    if (CreateButton(map, panel, slot)) changed = true;
+                    else slot.NextButtonAttemptFrame = Time.frameCount + ButtonRetryFrames;
+                }
+                if (slot.Button == null && slot.ButtonAttempts < MaxButtonAttempts) waiting = true;
             }
 
-            if (_buttons.Count > 0)
+            if (changed)
             {
-                panel.SetMaximizeEnabled(true);
-                panel.ResizeToFit(panel.ButtonListParent.childCount);
-                panel.Maximize(true);
+                _pendingButtonLayout = true;
+                _layoutAttempts = 0;
+                _nextLayoutAttemptFrame = 0;
             }
-            else
+            if (_pendingButtonLayout && !panel.InControlState && Time.frameCount >= _nextLayoutAttemptFrame)
             {
-                Log.Warn("no custom button could be created.");
+                _layoutAttempts++;
+                try
+                {
+                    List<Button> panelButtons = PanelButtonsRef(panel);
+                    if (panelButtons != null) panelButtons.RemoveAll(button => button == null);
+                    panel.SetMaximizeEnabled(true);
+                    panel.ResizeToFit(panel.ButtonListParent.childCount);
+                    // Maximize returns immediately if already open. Defer this refresh while a
+                    // call is selected, then re-open to apply the new width and scroll arrows.
+                    panel.Minimize(true);
+                    panel.Maximize(true);
+                    LayoutRebuilder.ForceRebuildLayoutImmediate((RectTransform)panel.transform);
+                    UpdateScrollButtons(panel);
+                    _pendingButtonLayout = false;
+                }
+                catch (Exception)
+                {
+                    _pendingButtonLayout = _layoutAttempts < MaxButtonAttempts;
+                    _nextLayoutAttemptFrame = Time.frameCount + ButtonRetryFrames;
+                }
             }
+            waiting |= _pendingButtonLayout;
+            _buttonsCreated = !waiting;
+            _pendingButtons = waiting;
         }
 
-        private static void CreateButton(MapController map, MapFireSupportPanel panel, BuiltSlot slot)
+        private static bool CreateButton(MapController map, MapFireSupportPanel panel, BuiltSlot slot)
         {
+            GameObject instance = null;
+            Button button = null;
+            List<Button> panelButtons = null;
             try
             {
                 GameObject prefab = ButtonPrefabRef(panel);
                 if (prefab == null)
                 {
-                    Log.Warn("slot " + slot.Config.Index + ": button prefab reference is missing; cannot create a button.");
-                    return;
+                    throw new InvalidOperationException("button prefab reference is missing");
                 }
 
                 // Instantiate the button INACTIVE so its MapIconControlType.Awake does not run before we
@@ -435,7 +536,6 @@ namespace CustomFireSupport
                 // status text). Deactivating the source prefab for the instantiation is the way to defer
                 // Awake; it is restored immediately afterwards.
                 bool prefabWasActive = prefab.activeSelf;
-                GameObject instance;
                 if (prefabWasActive)
                 {
                     prefab.SetActive(false);
@@ -454,16 +554,10 @@ namespace CustomFireSupport
 
                 instance.name = "CustomFireSupportButton_Slot" + slot.Config.Index + "_" + ButtonNameSuffix(slot.DisplayName);
                 instance.transform.SetAsLastSibling();
-                // Track immediately: Teardown() must be able to remove it even if a later step fails.
-                _buttons.Add(instance);
-
                 MapIconControlType control = instance.GetComponent<MapIconControlType>();
                 if (control == null)
                 {
-                    Log.Warn("slot " + slot.Config.Index + ": button prefab has no MapIconControlType; discarding it.");
-                    _buttons.Remove(instance);
-                    UnityEngine.Object.Destroy(instance);
-                    return;
+                    throw new InvalidOperationException("button prefab has no MapIconControlType");
                 }
 
                 MapControlFlag flag = FireSupportTemplates.ToMapControlFlag(slot.Config.Kind);
@@ -493,16 +587,23 @@ namespace CustomFireSupport
                     // The icon is cosmetic; never let it abort the button.
                 }
 
-                Button button = instance.GetComponent<Button>();
-                if (button != null)
+                button = instance.GetComponent<Button>();
+                if (button == null) throw new InvalidOperationException("button prefab has no Button");
+                panelButtons = PanelButtonsRef(panel);
+                if (panelButtons == null) throw new InvalidOperationException("panel button list is missing");
+                int listIndex = panelButtons.Count;
+                for (int i = _built.IndexOf(slot) + 1; i < _built.Count; i++)
                 {
-                    List<Button> panelButtons = PanelButtonsRef(panel);
-                    if (panelButtons != null)
-                    {
-                        panelButtons.Add(button);
-                    }
-                    button.interactable = MissionStateController.CurrentState != MissionState.Planning;
+                    GameObject next = _built[i].Button;
+                    if (next == null) continue;
+                    // A recovered slot belongs before later slots, even if they succeeded first.
+                    instance.transform.SetSiblingIndex(next.transform.GetSiblingIndex());
+                    int nextIndex = panelButtons.IndexOf(next.GetComponent<Button>());
+                    if (nextIndex >= 0) listIndex = nextIndex;
+                    break;
                 }
+                panelButtons.Insert(listIndex, button);
+                button.interactable = MissionStateController.CurrentState != MissionState.Planning;
 
                 map.AvailableControlFlags = map.AvailableControlFlags | flag;
 
@@ -512,10 +613,20 @@ namespace CustomFireSupport
                 {
                     instance.SetActive(true);
                 }
+                slot.Button = instance;
+                _buttons.Add(instance);
+                return true;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Log.Error("slot " + slot.Config.Index + ": could not create the map button: " + ex);
+                if (panelButtons != null && button != null) panelButtons.Remove(button);
+                if (instance != null)
+                {
+                    instance.SetActive(false);
+                    instance.transform.SetParent(null, false);
+                    UnityEngine.Object.Destroy(instance);
+                }
+                return false;
             }
         }
 
@@ -566,9 +677,9 @@ namespace CustomFireSupport
         internal static void ResetForScene()
         {
             FireSupportPatches.CasTargetSpreadPatch.ResetForScene();
-            // A new scene means a new mission: the slots must be built again for it.
+            // Called only when the game replaces the base scene, not for additive scene loads.
             _preparedThisMission = false;
-            Teardown(false);
+            Teardown(true);
         }
 
         /// <summary>Removes everything this mod added, optionally destroying the buttons it created.</summary>
@@ -579,13 +690,7 @@ namespace CustomFireSupport
 
             if (destroyButtons)
             {
-                for (int i = 0; i < _buttons.Count; i++)
-                {
-                    if (_buttons[i] != null)
-                    {
-                        UnityEngine.Object.Destroy(_buttons[i]);
-                    }
-                }
+                ClearButtons();
             }
 
             _buttons.Clear();
@@ -601,6 +706,10 @@ namespace CustomFireSupport
             _casManager = null;
             _createdCasManager = false;
             _casDeployPlaced = false;
+            _playerCasCall = false;
+            _markNextSortie = false;
+            _buttonMap = null;
+            _buttonPanel = null;
         }
 
         private static void DeinjectArtillery()
@@ -759,7 +868,7 @@ namespace CustomFireSupport
         /// <summary>
         /// Re-rolls the airframe AND its loadout for the slot being called, so a bomb or rocket slot
         /// sends a different aircraft with a different payload every time. Gun-run slots are left alone
-        /// on purpose: their airframe is the designated one (Blue = A-10, Red = MiG-23BN).
+        /// on purpose: their airframe is the designated one (Blue = A-10, Red = Su-22 or Su-25).
         ///
         /// The re-roll MUTATES the slot's existing CasAirframeUnit - it never replaces it. That object
         /// is shared by three things that all match it by reference:
@@ -816,15 +925,9 @@ namespace CustomFireSupport
                 // (CasPrewarmer.BundleAirframeNames), so a draw always yields a summonable prefab asset -
                 // the old scene-scan roster is what made a redraw land on an object whose
                 // CASController.Start() never ran.
-                string failure;
-                CasSlot fresh = CustomSlotBuilder.BuildCas(slot.Config, slot.Templates, faction, out failure);
+                CasSlot fresh = CustomSlotBuilder.BuildCas(slot.Config, slot.Templates, faction);
                 if (fresh == null || fresh.Airframe == null || fresh.Airframe.airframePrefab == null)
                 {
-                    if (!string.IsNullOrEmpty(failure))
-                    {
-                        Log.Warn("slot " + slot.Config.Index + ": could not re-roll the airframe (" + failure + "); " +
-                                 "the previous one is used again.");
-                    }
                     return false;
                 }
                 if (ReferenceEquals(fresh.Airframe.airframePrefab, airframe.airframePrefab) &&
@@ -838,9 +941,8 @@ namespace CustomFireSupport
                 airframe.flyoverType = fresh.Airframe.flyoverType;
                 return true;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Log.Error("CAS airframe re-roll failed: " + ex);
                 return false;
             }
         }
@@ -954,22 +1056,6 @@ namespace CustomFireSupport
             return true;
         }
 
-        /// <summary>
-        /// True when the map panel currently has a CAS support entry selected, whether or not it belongs
-        /// to this mod. Lets a caller tell "no CAS slot was selected" (normal) apart from "a slot was
-        /// selected but the registry cannot resolve it" (a bug, and the call would otherwise silently
-        /// fall back to the game's own pick).
-        /// </summary>
-        internal static bool PanelHasActiveCasSupport()
-        {
-            MapController map = MapController.Instance;
-            if (map == null || map.FireSupportPanel == null)
-            {
-                return false;
-            }
-            return map.FireSupportPanel.ActiveSupportInfo is CasAirframeUnit;
-        }
-
         // ------------------------------------------------------------------
         // Environment helpers
         // ------------------------------------------------------------------
@@ -995,8 +1081,6 @@ namespace CustomFireSupport
                 return;
             }
 
-            Log.Warn("player faction is " + faction + " but the slots were built for " + _playerFaction +
-                     "; injecting on the correct side so they can be called.");
             _playerFaction = faction;
         }
 
@@ -1109,9 +1193,8 @@ namespace CustomFireSupport
                 RedDeployPointRef(manager) = point;
                 return true;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Log.Warn("could not set the CAS deploy point: " + ex.Message);
                 return false;
             }
         }

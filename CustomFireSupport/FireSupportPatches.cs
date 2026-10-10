@@ -9,6 +9,7 @@ using GHPC.PhysicsHelpers;
 using GHPC.UI;
 using GHPC.UI.Map;
 using GHPC.Vehicle;
+using GHPC.Weaponry;
 using GHPC.Weaponry.CAS;
 using GHPC.Weaponry.Interfaces;
 using GHPC.Weapons;
@@ -131,9 +132,8 @@ namespace CustomFireSupport
                 {
                     CustomSupportRegistry.PrepareMission(__instance);
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("InitControlState prefix failed: " + ex);
                 }
             }
         }
@@ -210,17 +210,6 @@ namespace CustomFireSupport
                     CasAirframeUnit airframe;
                     if (!CustomSupportRegistry.TryGetActiveCasAirframe(unitFaction, out airframe))
                     {
-                        // The panel's selected entry is not one of ours. That used to happen silently
-                        // when a re-roll replaced the airframe object the button was holding, and vanilla
-                        // then picked "the first ready airframe" - i.e. the wrong aircraft, on the wrong
-                        // attack type. It is a bug whenever it happens with a custom slot on the panel, so
-                        // say so instead of quietly sending whatever vanilla finds.
-                        if (CustomSupportRegistry.PanelHasActiveCasSupport())
-                        {
-                            Log.Warn("CAS call: the selected airframe is not one of the mod's slots (the panel " +
-                                     "is pointing at an object the registry does not know); falling back to the " +
-                                     "game's own pick, which may be a different aircraft and attack type.");
-                        }
                         return true;
                     }
 
@@ -228,9 +217,6 @@ namespace CustomFireSupport
                     int index = array == null ? -1 : Array.IndexOf(array, airframe);
                     if (index < 0)
                     {
-                        Log.Warn("CAS call: the selected airframe is not in the " + unitFaction +
-                                 " array (it was injected before the player faction was known); " +
-                                 "falling back to the game's own pick.");
                         return true;
                     }
 
@@ -243,22 +229,17 @@ namespace CustomFireSupport
 
                     // Vanilla instantiates the prefab and immediately does GetComponent<CASController>()
                     // on the clone. A donor whose controller is not on its own root would throw there
-                    // (NullReferenceException) and abort the whole call, so refuse it with a clear log.
+                    // (NullReferenceException) and abort the whole call, so refuse it cleanly.
                     // CasDonorProvider now resolves donors to the aircraft root, which makes this a
                     // pure safety net rather than the normal path.
                     if (airframe.airframePrefab == null)
                     {
-                        Log.Error("CAS call: the selected airframe has no prefab; the call was cancelled.");
                         __result = MapMissionResult.Empty;
                         return false;
                     }
                     if (airframe.airframePrefab.GetComponent<CASController>() == null)
                     {
                         CASController nested = airframe.airframePrefab.GetComponentInChildren<CASController>(true);
-                        Log.Error("CAS call: airframe prefab '" + airframe.airframePrefab.name +
-                                  "' has no CASController on its root" +
-                                  (nested != null ? " (one exists on a child, which vanilla cannot use)" : string.Empty) +
-                                  "; the call was cancelled. This donor should have been resolved to the aircraft root.");
                         __result = MapMissionResult.Empty;
                         return false;
                     }
@@ -273,15 +254,13 @@ namespace CustomFireSupport
                     CasSlot calledSlot;
                     if (CustomSupportRegistry.TryGetCasSlot(airframe, out calledSlot) && calledSlot.Config != null)
                     {
-                        string readiness;
-                        CasCallReadinessRepair.EnsureReadyForCall(airframe, calledSlot.Config.Index,
-                            calledSlot.Config.Missions, calledSlot.Config.CooldownSeconds, out readiness);
+                        CasCallReadinessRepair.EnsureReadyForCall(airframe, calledSlot.Config.Missions,
+                            calledSlot.Config.CooldownSeconds);
                     }
                     CustomSupportRegistry.MarkNextSpawnedSortie();
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("SendCasSupport prefix failed: " + ex);
                 }
                 return true;
             }
@@ -392,9 +371,8 @@ namespace CustomFireSupport
                     ShotCounterRef(__instance) = quota;
                     RemainingDelayRef(__instance) = 0f;
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("instant volley failed: " + ex.Message);
                 }
             }
         }
@@ -462,53 +440,177 @@ namespace CustomFireSupport
         [HarmonyPatch(typeof(CASHardpoint), "LaunchSingleMunition")]
         internal static class CasImpactPointPatch
         {
-            private static void Prefix(CASHardpoint __instance)
+            private static bool Prefix(CASHardpoint __instance, ref Transform target)
             {
+                bool missile = false;
                 try
                 {
+                    if (__instance != null)
+                    {
+                        // Register the live hardpoint wrapper before classification. Unity can
+                        // deserialize the runtime template into a distinct AmmoType object.
+                        bool runtimeMissile = __instance.Type == CASAttackType.AirToGroundMissile &&
+                            CasPayloadFactory.IsRuntimeHardpoint(__instance) &&
+                            CasFireChainRepair.IsOurSortie(__instance.GetComponentInParent<CASController>());
+                        if (runtimeMissile)
+                        {
+                            CasPayloadFactory.RegisterRuntimeMissile(__instance.Ammo);
+                        }
+                        // A same-name native AGM-65/Kh-25 is not ours. Ownership comes from the runtime
+                        // hardpoint marker; the AmmoType identity is registered only inside that boundary.
+                        missile = runtimeMissile && CasPayloadFactory.IsOurMissile(__instance.Ammo);
+                    }
                     // Never carry a stale point into this round.
                     CasPayloadFactory.ClearPendingImpact();
 
-                    if (__instance == null || !CasPayloadFactory.UsesImpactResolver(__instance))
+                    if (__instance == null || (!missile && !CasPayloadFactory.UsesImpactResolver(__instance)))
                     {
-                        return; // vanilla / enemy / bomb / missile: the game flies it
+                        return true;
                     }
+                    if (__instance.TotalMunitionsRemaining <= 0) return true;
 
                     CASController controller = __instance.GetComponentInParent<CASController>();
-                    Unit launchTarget = controller != null ? controller.FinalTarget : null;
-                    if (controller == null || launchTarget == null || launchTarget.Center == null)
+                    // The native manager already passes its locked Transform to this call. FinalTarget
+                    // is not a substitute for that argument: it can be cleared while a lock still exists.
+                    Unit launchTarget = missile && target != null ? CasAirTargets.UnitOf(target) : null;
+                    if (launchTarget == null && controller != null) launchTarget = controller.FinalTarget;
+                    if (launchTarget == null && controller != null && missile)
                     {
-                        return; // no locked target: nothing to resolve, the round stays ballistic
+                        launchTarget = CasMissileAttackRun.RecoverLaunchTarget(controller, __instance.Ammo);
+                    }
+                    Transform launchPoint = missile && target != null ? target :
+                        (launchTarget != null ? launchTarget.Center : null);
+                    if (missile && controller != null && launchTarget != null &&
+                        CasMissileAttackRun.IsAgm65(__instance.Ammo))
+                    {
+                        // AGM-65 is the only A/B salvo path. Kh-25 deliberately keeps the
+                        // controller's single target so both laser rounds remain on that target.
+                        launchTarget = CasMissileAttackRun.SelectAgmTarget(controller, __instance, launchTarget);
+                        if (launchTarget == null || launchTarget.Center == null)
+                        {
+                            // Do not create an AGM-65 with a null guidance target when both the
+                            // planned B target and the valid A fallback have disappeared.
+                            return false;
+                        }
+                        // The native argument remains A for both trigger pulls. The committed AGM plan
+                        // owns B, so only this path replaces the native point with the selected unit.
+                        launchPoint = launchTarget.Center;
+                        target = launchPoint;
+                    }
+                    if (controller == null || launchPoint == null)
+                    {
+                        if (missile)
+                        {
+                            return false;
+                        }
+                        return true;
                     }
 
                     // The controller we just resolved is handed on, so the slot lookup does not have to
                     // walk the hierarchy a second time for every round of a 140-round burst.
                     float accuracy = CasPayloadFactory.SlotAccuracy(controller, __instance);
                     Vector3 offset = CasPayloadFactory.ImpactOffsetFor(__instance, accuracy);
-                    CasPayloadFactory.SetPendingImpact(launchTarget.Center, offset, __instance.Ammo,
+                    if (missile) target = launchPoint;
+                    CasPayloadFactory.SetPendingImpact(launchPoint, offset, __instance.Ammo,
                         CasPayloadFactory.IsGravityAware(__instance), controller.transform, launchTarget);
 
                     // A LASER-GUIDED missile needs its carrier to stay on the run: the round only sees the
                     // spot while that aircraft's nose is within the profile's limit of it, and the game's own
                     // run ends about two seconds after the shot while the round needs seven. The hold is
                     // registered here, at the launch that creates the beam (CasLaserRunHold does the rest).
-                    CasAirframeCatalog.MissileProfile missile = CasPayloadFactory.ProfileFor(__instance.Ammo);
-                    if (missile != null)
-                    {
-                        CasLaserRunHold.Begin(controller, missile,
-                        Vector3.Distance(controller.transform.position, launchTarget.Center.position));
-
-                        // Aim the launch itself. The game fires the round along the muzzle's forward and
-                        // gives it that velocity, so an off-axis or very close shot would otherwise have to
-                        // turn onto the target after launch and sail past it. Bounded to 45 deg so a shot
-                        // outside the launch envelope still behaves like one.
-                        CasPayloadFactory.AimLaunchAt(__instance, launchTarget.Center.position, out _);
-                    }
+                    // Hold registration occurs after LiveRound.Init confirms that this round exists.
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("CAS impact point patch failed: " + ex);
+                    CasPayloadFactory.ClearPendingImpact();
+                    if (missile)
+                    {
+                        return false;
+                    }
+                    return true;
                 }
+                return true;
+            }
+
+            private static void Postfix() { CasPayloadFactory.ClearPendingImpact(); }
+
+            private static Exception Finalizer(Exception __exception)
+            {
+                CasPayloadFactory.ClearPendingImpact();
+                return __exception;
+            }
+        }
+
+        /// <summary>
+        /// Exact synchronous launch boundary. No scene-wide nearest-aircraft lookup is allowed:
+        /// the hardpoint and refAmmo arguments identify the real launcher and ammo. A nested spawn
+        /// has its own scope and cannot erase/consume its caller's context.
+        /// </summary>
+        [HarmonyPatch(typeof(CASHardpoint), "SpawnMunition")]
+        internal static class CasMissileSpawnContextPatch
+        {
+            internal sealed class LaunchContext
+            {
+                internal LaunchContext Previous;
+                internal AmmoType Ammo;
+                internal Transform Target;
+                internal Transform Carrier;
+                internal Unit Unit;
+                internal Vector3 SpawnPoint;
+                internal LiveRound Round;
+            }
+
+            [ThreadStatic] private static LaunchContext _active;
+
+            private static void Prefix(CASHardpoint __instance, AmmoCodexScriptable refAmmo,
+                Transform target, Vector3 spawnPoint, out LaunchContext __state)
+            {
+                // Even an unrelated nested SpawnMunition masks the outer scope until it returns.
+                __state = new LaunchContext { Previous = _active };
+                _active = __state;
+                if (__instance == null || refAmmo == null || refAmmo.AmmoType == null ||
+                    __instance.Type != CASAttackType.AirToGroundMissile ||
+                    !CasPayloadFactory.IsRuntimeHardpoint(__instance)) return;
+                CASController controller = __instance.GetComponentInParent<CASController>();
+                if (controller == null) return;
+                CasPayloadFactory.RegisterRuntimeMissile(refAmmo.AmmoType);
+                __state.Ammo = refAmmo.AmmoType;
+                // LaunchSingleMunition's ref target already carries AGM A/B selection. It must
+                // not be selected again at Init, which would overwrite B with shared FinalTarget.
+                __state.Target = target;
+                __state.Unit = CasAirTargets.UnitOf(target);
+                __state.Carrier = controller.transform;
+                __state.SpawnPoint = spawnPoint;
+            }
+
+            internal static LaunchContext Capture(LiveRound round)
+            {
+                LaunchContext context = _active;
+                if (context == null || context.Ammo == null || context.Target == null ||
+                    context.Carrier == null || context.Round != null || round == null ||
+                    round.Info == null || round.IsSpall || !round.NpcRound || round.Shooter != null ||
+                    (round.transform.position - context.SpawnPoint).sqrMagnitude > 4f ||
+                    !string.Equals(round.name, "live cas muntion " + context.Ammo.Name,
+                        StringComparison.Ordinal)) return null;
+                // The generated name fallback is scoped to THIS SpawnMunition only, and the native
+                // spawned-object name is checked too. A same-name arbitrary Init cannot take it.
+                if (!ReferenceEquals(round.Info, context.Ammo) &&
+                    !string.Equals(round.Info.Name, context.Ammo.Name,
+                        StringComparison.OrdinalIgnoreCase)) return null;
+                context.Round = round;
+                CasPayloadFactory.RegisterRuntimeMissile(round.Info);
+                return context;
+            }
+
+            internal static bool OwnsRound(LiveRound round)
+            {
+                return _active != null && ReferenceEquals(_active.Round, round);
+            }
+
+            private static Exception Finalizer(LaunchContext __state, Exception __exception)
+            {
+                if (__state != null && ReferenceEquals(_active, __state)) _active = __state.Previous;
+                return __exception;
             }
         }
 
@@ -566,9 +668,11 @@ namespace CustomFireSupport
                     // loadout keeps that loadout, so the marker has to come from the call instead).
                     bool ours = CustomSlotBuilder.IsOurLoadout(loadout) ||
                                 CustomSupportRegistry.ConsumeMarkedSortie();
-                    if (ours && __instance.gameObject.GetComponent<CustomCasMarker>() == null)
+                    if (ours)
                     {
-                        __instance.gameObject.AddComponent<CustomCasMarker>();
+                        CustomCasMarker marker = __instance.gameObject.GetComponent<CustomCasMarker>();
+                        if (marker == null) marker = __instance.gameObject.AddComponent<CustomCasMarker>();
+                        marker.Bind(__instance);
                     }
 
                     GameObject root = __instance.gameObject;
@@ -597,12 +701,9 @@ namespace CustomFireSupport
                         return;
                     }
 
-                    Log.Warn("CAS controller '" + __instance.name + "' has no CASHardpointManager anywhere " +
-                             "(including inactive).");
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("CAS SetLoadout manager patch failed: " + ex);
                 }
             }
 
@@ -670,9 +771,8 @@ namespace CustomFireSupport
                     }
                     __result = transform.forward * SpeedRef(__instance);
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("CAS airspeed patch failed: " + ex);
                 }
             }
         }
@@ -791,9 +891,8 @@ namespace CustomFireSupport
                     // range (so the fall brings the round onto it) plus the target's motion lead.
                     __result = targetPos + targetVelocity * flightTime + Vector3.up * drop;
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("CAS live-aim patch failed: " + ex);
                 }
             }
         }
@@ -872,9 +971,8 @@ namespace CustomFireSupport
                     __state.Scaled = true;
                     DeviationRef(__instance) = CustomSlotBuilder.ScaleValue(__state.Original, accuracy);
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("CAS accuracy patch failed: " + ex);
                 }
             }
 
@@ -965,9 +1063,8 @@ namespace CustomFireSupport
                     }
 
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("CAS single-hardpoint patch failed: " + ex);
                 }
             }
         }
@@ -1056,9 +1153,8 @@ namespace CustomFireSupport
                             gunSound = CasGunAudio.Begin(anchor.transform, gunAirframeName);
                         }
                     }
-                    catch (Exception ex)
+                    catch (Exception)
                     {
-                        Log.Error("CAS gun audio: could not start the custom burst sound: " + ex);
                     }
 
                     if (gunSound == null)
@@ -1071,9 +1167,8 @@ namespace CustomFireSupport
                                 gunAudio.Play();
                             }
                         }
-                        catch (Exception ex)
+                        catch (Exception)
                         {
-                            Log.Error("CAS gun audio: could not start the sustained fire event: " + ex);
                         }
                     }
 
@@ -1117,9 +1212,8 @@ namespace CustomFireSupport
                             gunAudio.Stop();
                             audioStopped = true;
                         }
-                        catch (Exception ex)
+                        catch (Exception)
                         {
-                            Log.Error("CAS gun audio: could not stop the sustained fire event: " + ex);
                         }
                     }
                     BusyRef(manager) = false;
@@ -1175,9 +1269,8 @@ namespace CustomFireSupport
                         CasPayloadFactory.SetAudioEvent(__instance, string.Empty);
                     }
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("CAS gun audio throttle failed: " + ex);
                 }
             }
 
@@ -1248,9 +1341,8 @@ namespace CustomFireSupport
                     }
                     CasPayloadFactory.SpawnFallbackImpact(__instance, terrainHit);
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("CAS impact fallback failed: " + ex);
                 }
             }
 
@@ -1291,7 +1383,7 @@ namespace CustomFireSupport
         ///      through two separate export-time caches, and neither call's result is checked by the
         ///      caller, so this failure is completely silent.
         ///   2. Even when the call happens, CreateImpactDecalOfType returns null for a combination the
-        ///      decal database has no entry for (its own Debug.LogWarning needs
+        ///      decal database has no entry for (the game's debug-only warning path needs
         ///      ImpactDecalsManager.IsDebug, which a shipped build never sets), for a round whose
         ///      descriptor asks for no decal at all (ImpactDecalsManager.cs:22-25), and - the reason a gun
         ///      run used to leave nothing - for ANY round on Dirt whose EffectSize is Bullet or
@@ -1469,11 +1561,10 @@ namespace CustomFireSupport
 
                     return false;
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
                     // Never leave an impact unhandled: hand the hit back to the game's own body, which is
                     // exactly what would have run without this patch.
-                    Log.Error("CAS crater failed, falling back to the game's own decal call: " + ex);
                     return true;
                 }
             }
@@ -1503,7 +1594,7 @@ namespace CustomFireSupport
             /// stood up against the side of a tank is the artefact this avoids.
             ///
             /// GUARDS, in order (any of them leaves the game's own hull decal untouched and says why in
-            /// the log): not a spall fragment and not `_impactSkipDecal` (the game's own two suppression
+            /// the decision): not a spall fragment and not `_impactSkipDecal` (the game's own two suppression
             /// flags inside DoImpactDecal, LiveRound.cs:1401-1404 - where the game stamps nothing, this
             /// stamps nothing); a bomb-class warhead; the struck object must NOT report Dirt itself
             /// (then the original body, which this prefix lets run for a non-terrain hit, has already left
@@ -1581,18 +1672,17 @@ namespace CustomFireSupport
                         ParticleEffectsManager.SurfaceMaterial.Dirt, scarPoint, round.transform.forward,
                         Vector3.up, ground.normal, null);
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
                     // The hull hit itself is not affected in any way by this failing: the caller runs the
                     // game's own body for it either way.
-                    Log.Error("CAS missile ground scar failed (the object's own decal is unaffected): " + ex);
                 }
             }
 
             /// <summary>
             /// The scar report, once per round type and per outcome. The success line is the one that
-            /// settles the feature in a log ("CAS missile ground scar: 'Kh-25' at (x, y, z) ... -&gt;
-            /// decal '...'"); the failure line names the guard that refused it, so "no scar" is never
+            /// records the generated decal ("CAS missile ground scar: 'Kh-25' at (x, y, z) ... -&gt;
+            /// decal '...'"); each guard leaves the game's own hull decal untouched, so "no scar" is never
             /// silent and never ambiguous.
             /// </summary>
         }
@@ -1785,9 +1875,8 @@ namespace CustomFireSupport
                         GuidedRotations[__instance.GetInstanceID()] = guidance.IntendedRotation;
                     }
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("CAS impact steering failed: " + ex);
                 }
             }
 
@@ -1822,9 +1911,8 @@ namespace CustomFireSupport
                     }
                     __instance.transform.rotation = guidedRotation;
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("CAS missile rotation restore failed: " + ex);
                 }
             }
 
@@ -1955,8 +2043,11 @@ namespace CustomFireSupport
         [HarmonyPatch(typeof(LiveRound), "Init")]
         internal static class CasImpactAttachPatch
         {
-            private static void Prefix(LiveRound __instance)
+            [HarmonyPriority(Priority.First)]
+            private static void Prefix(LiveRound __instance, LiveRound parentRound,
+                out CasMissileSpawnContextPatch.LaunchContext __state)
             {
+                __state = parentRound == null ? CasMissileSpawnContextPatch.Capture(__instance) : null;
                 try
                 {
                     if (__instance == null)
@@ -1975,13 +2066,13 @@ namespace CustomFireSupport
                     stale.ShotId = 0;
                     stale.GravityAware = false;
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("CAS impact detach patch failed: " + ex);
                 }
             }
 
-            private static void Postfix(LiveRound __instance)
+            private static void Postfix(LiveRound __instance,
+                CasMissileSpawnContextPatch.LaunchContext __state)
             {
                 try
                 {
@@ -1995,8 +2086,20 @@ namespace CustomFireSupport
                     bool gravityAware;
                     Transform carrier;
                     Unit pendingUnit;
-                    bool ours = CasPayloadFactory.ConsumePendingImpact(__instance.Info, out target, out offset,
+                    bool ours = CasPayloadFactory.ConsumePendingImpactForRound(__instance, out target, out offset,
                         out gravityAware, out carrier, out pendingUnit);
+                    if (__state != null && ReferenceEquals(__state.Round, __instance))
+                    {
+                        CasPayloadFactory.RegisterRuntimeMissile(__instance.Info);
+                        // Retained on the Harmony invocation, so nested Init/launch cleanup cannot
+                        // destroy the binding after Prefix captured this exact spawned missile.
+                        target = __state.Target;
+                        carrier = __state.Carrier;
+                        pendingUnit = __state.Unit;
+                        offset = Vector3.zero;
+                        gravityAware = false;
+                        ours = true;
+                    }
 
                     // The air-to-ground missile's flight effects are the TOW's, composed into the bundle;
                     // the game's own effect materials are swapped in here, because this is the first moment
@@ -2017,15 +2120,10 @@ namespace CustomFireSupport
                             }
                         }
 
-                        // PER-MISSILE TARGET SPREAD. Both missiles leave the rail in the same pull, so they
-                        // must not be two shots at one vehicle: this missile is handed the next unclaimed
-                        // enemy, and on a battlefield with a single target it is handed that same one - which
-                        // is exactly what CasTargetSpreadPatch already does for the rocket path. The order of
-                        // arrivals here is the fire order. The round then turns onto its own target under the
-                        // guidance's rate limits, so the second missile curves across in flight instead of
-                        // snapping to a new heading.
-                        // The launch hook selected this round's target before SpawnMunition. Keep the
-                        // pending target; selecting again here would collapse the salvo back to FinalTarget.
+                        // AGM-65 target selection happens in CasImpactPointPatch immediately before
+                        // SpawnMunition. Keep that pending target here; selecting again in Init would
+                        // collapse the salvo back to the controller's shared FinalTarget. Kh-25 does not
+                        // enter the AGM plan and therefore keeps the same FinalTarget for both rounds.
                     }
                     else if (CasPrewarmer.IsBundledAmmo(__instance.Info))
                     {
@@ -2035,11 +2133,14 @@ namespace CustomFireSupport
                         CasMissileVisualRepair.ApplyRoundVisual(__instance.gameObject, __instance.Info);
                     }
 
-                    // Our own missiles never go through the pending-impact path (they are flown by
-                    // CasMissileGuidance, not the shared impact resolver), so this used to return before the
-                    // aim was ever written - which also threw away the PER-MISSILE TARGET handed out above,
-                    // and is why both missiles always chased the same vehicle. The missile keeps going.
+                    // Our own missiles are flown by CasMissileGuidance rather than the shared impact
+                    // resolver, but they still use the pending context to carry their per-round target
+                    // from LaunchSingleMunition into Init.
                     bool missile = CasPayloadFactory.IsOurMissile(__instance.Info);
+                    if (missile && (!ours || target == null || carrier == null))
+                    {
+                        return;
+                    }
                     if (!ours && !missile)
                     {
                         return;
@@ -2077,6 +2178,19 @@ namespace CustomFireSupport
                         // what tells the round whether it is an ANTI-AIRCRAFT round (see
                         // CasMissileGuidance.SetTarget / CasAirTargets.IsAirUnit).
                         guidance.SetTarget(aim.DynamicTarget, pendingUnit);
+                        CASController controller = carrier != null ? carrier.GetComponentInParent<CASController>() : null;
+                        if (controller != null)
+                        {
+                            if (CasMissileAttackRun.IsAgm65(__instance.Info))
+                            {
+                                // Do not consume the A/B ordinal in the launch prefix. Init has
+                                // completed and this round now owns its independent target.
+                                CasMissileAttackRun.CommitAgmLaunch(controller, pendingUnit);
+                            }
+                            long token = CasMissileAttackRun.NoteMissileFired(controller,
+                                CasPayloadFactory.ProfileFor(__instance.Info), pendingUnit, __instance.ID);
+                            guidance.SetHoldToken(token);
+                        }
                         CasTargetSpreadPatch.RegisterMissile(guidance, pendingUnit);
                     }
 
@@ -2096,9 +2210,8 @@ namespace CustomFireSupport
                         DisableTracer(__instance);
                     }
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("CAS impact attach patch failed: " + ex);
                 }
             }
 
@@ -2279,12 +2392,114 @@ namespace CustomFireSupport
                 }
             }
 
+            /// <summary>
+            /// Finds the second target for an AGM-65 salvo.  This is deliberately separate from
+            /// the normal plane-to-plane spreading path: it requires a fresh visibility check at
+            /// launch time and excludes the first missile's target even though claims owned by the
+            /// same plane are normally allowed for multi-plane deconfliction.
+            /// </summary>
+            internal static Unit FindAlternativeTargetForAgm(CASController plane, Unit exclude)
+            {
+                if (plane == null || exclude == null || exclude.Center == null) return null;
+
+                List<Unit>[] allUnits = SceneUnitsManager.AllLiveUnitsByFaction;
+                if (allUnits == null) return null;
+
+                Unit best = null;
+                float bestDistanceSquared = float.PositiveInfinity;
+                for (int f = 0; f < allUnits.Length; f++)
+                {
+                    Faction faction = (Faction)f;
+                    if (faction == Faction.Neutral || faction == plane.unitFaction)
+                    {
+                        continue;
+                    }
+
+                    List<Unit> list = allUnits[f];
+                    if (list == null) continue;
+                    for (int i = 0; i < list.Count; i++)
+                    {
+                        Unit candidate = list[i];
+                        if (candidate == null || candidate == exclude || candidate.Neutralized ||
+                            candidate.Center == null)
+                        {
+                            continue;
+                        }
+
+                        // AGM-65's second round is a local pair attack: measure the radius from
+                        // the first target, not from the aircraft. This prevents a distant unit
+                        // near the ingress path from stealing the second missile.
+                        float distanceSquared = (candidate.Center.position - exclude.Center.position).sqrMagnitude;
+                        float radius = CasMissileAttackRun.SecondaryTargetRadiusMeters;
+                        if (distanceSquared > radius * radius)
+                        {
+                            continue;
+                        }
+                        // Radius first: do not run expensive visibility/attack checks for the
+                        // rest of the battlefield, and an out-of-range unit cannot fail B's scan.
+                        if (IsClaimedByOther(candidate, plane) || !CanPlaneAttack(plane, candidate) ||
+                            !CasAirTargets.IsVisibleFrom(plane, candidate)) continue;
+                        if (distanceSquared < bestDistanceSquared)
+                        {
+                            bestDistanceSquared = distanceSquared;
+                            best = candidate;
+                        }
+                    }
+                }
+                return best;
+            }
+
             internal static void ReleaseMissile(CasMissileGuidance missile)
             {
                 if (missile != null)
                 {
                     MissileClaims.Remove(missile);
                 }
+            }
+
+            /// <summary>
+            /// Releases every target reservation owned by one aircraft when its sortie ends.
+            /// The normal per-frame pruning handles destroyed targets, but a live target must also be
+            /// released when the aircraft leaves the area or is removed from the scene; otherwise the
+            /// next CAS call can incorrectly treat that target as occupied forever.
+            /// </summary>
+            internal static void RemovePlane(CASController plane)
+            {
+                if (plane == null)
+                {
+                    return;
+                }
+
+                foreach (KeyValuePair<Unit, HashSet<CASController>> pair in Claims)
+                {
+                    HashSet<CASController> owners = pair.Value;
+                    if (owners == null)
+                    {
+                        continue;
+                    }
+                    owners.Remove(plane);
+                }
+
+                ReleasedClaims.Clear();
+                foreach (KeyValuePair<Unit, HashSet<CASController>> pair in Claims)
+                {
+                    if (pair.Value == null || pair.Value.Count == 0)
+                    {
+                        ReleasedClaims.Add(pair.Key);
+                    }
+                }
+                for (int i = 0; i < ReleasedClaims.Count; i++)
+                {
+                    Claims.Remove(ReleasedClaims[i]);
+                }
+                ReleasedClaims.Clear();
+
+                int id = plane.GetInstanceID();
+                ClearOwnCheatTarget(id, plane);
+
+                // Do not clear MissileClaims here. A missile can remain in flight after its carrier
+                // leaves the CAS state machine; its target reservation belongs to the projectile until
+                // CasMissileGuidance.OnDestroy releases it.
             }
 
             /// <summary>
@@ -2352,13 +2567,11 @@ namespace CustomFireSupport
                         CheatWritten.Add(id);
                     }
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
                     // FAIL SAFE, NOT FAIL OPEN: clear the validated entry and the game's bypass field, so an
                     // error here can never leave an aircraft attacking an unseen target.
                     ClearOwnCheatTarget(id, __instance);
-                    Log.Error("CAS target spreading: the air-target gate failed (the game's own target " +
-                              "search is kept): " + ex);
                 }
             }
 
@@ -2427,11 +2640,18 @@ namespace CustomFireSupport
                         RecomputeAttackParams(__instance);
                     }
 
+                    // Preserve the native selection for the AGM first trigger pull. The controller
+                    // may clear FinalTarget while transitioning into FiringWeapons; the cached unit
+                    // is only updated with a live target that has already passed native search.
+                    if (result != null)
+                    {
+                        CasMissileAttackRun.RememberPrimaryTarget(__instance, result);
+                    }
+
                     ClaimForPlane(result, __instance);
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("CAS target spreading patch failed: " + ex);
                 }
             }
 
@@ -2468,36 +2688,6 @@ namespace CustomFireSupport
             }
 
 
-
-            /// <summary>
-            /// The aircraft a round was fired from, found from the round's own position.
-            ///
-            /// The mod's own missiles never set a pending impact, so the carrier transform that the
-            /// pending-impact path hands out is null for them - and that made the per-missile target spread
-            /// a no-op (both rounds fell back to the plane's single FinalTarget). A round is spawned at the
-            /// hardpoint of the aircraft that fired it, so the nearest controller is the launcher.
-            /// </summary>
-            internal static CASController NearestCasController(Vector3 position)
-            {
-                CASController[] planes = UnityEngine.Object.FindObjectsOfType<CASController>();
-                CASController best = null;
-                float bestSquared = 200f * 200f;
-                for (int i = 0; i < planes.Length; i++)
-                {
-                    CASController plane = planes[i];
-                    if (plane == null)
-                    {
-                        continue;
-                    }
-                    float d = (plane.transform.position - position).sqrMagnitude;
-                    if (d < bestSquared)
-                    {
-                        bestSquared = d;
-                        best = plane;
-                    }
-                }
-                return best;
-            }
 
             /// <summary>
             /// THE ENEMY AIRCRAFT NEAREST THE POINT THIS CALL WAS MADE AGAINST, or null.
@@ -2712,6 +2902,14 @@ namespace CustomFireSupport
                 }
             }
 
+            // AGM-65's per-shot plan uses the same native attack-type capability test as the
+            // ordinary CAS spreading path.  Expose only this narrow wrapper so the missile plan
+            // can revalidate a target immediately before its second trigger pull.
+            internal static bool CanPlaneAttackForAgm(CASController plane, Unit unit)
+            {
+                return CanPlaneAttack(plane, unit);
+            }
+
             private static void RecomputeAttackParams(CASController plane)
             {
                 if (EnterStateMethod == null || TurnTowardTarget == null)
@@ -2722,9 +2920,8 @@ namespace CustomFireSupport
                 {
                     EnterStateMethod.Invoke(plane, new object[] { TurnTowardTarget });
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("CAS target spreading: failed to recompute attack parameters: " + ex.Message);
                 }
             }
 

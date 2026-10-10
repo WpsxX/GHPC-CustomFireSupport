@@ -202,13 +202,11 @@ namespace CustomFireSupport
                     __result = prefab != null;
                     return false; // the exported index must never be dereferenced.
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
                     // Nothing was written anywhere, so falling back to the game's own method cannot make
                     // things worse than they were before this patch existed.
                     prefab = null;
-                    Log.Error("CAS impact lookup: resolving '" + ammoType.Name +
-                              "' failed, falling back to the game's own lookup: " + ex);
                     return true;
                 }
             }
@@ -278,11 +276,9 @@ namespace CustomFireSupport
                     __result = prefab != null;
                     return false;
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
                     prefab = null;
-                    Log.Error("CAS impact lookup: resolving the decal for '" + ammoType.Name +
-                              "' failed, falling back to the game's own lookup: " + ex);
                     return true;
                 }
             }

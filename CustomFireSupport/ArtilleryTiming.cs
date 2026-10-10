@@ -14,7 +14,7 @@ namespace CustomFireSupport
     /// with no key to turn it off. A slot configured "arrive fast, but space the rounds like vanilla"
     /// (ImpactDelaySeconds = 0.3, InterShotDelaySeconds = 1.0) therefore fired its rounds
     /// 0.7 x 0.3 = 0.21 s apart instead of the 0.7 s it asked for, which in game looks exactly like the
-    /// interval key being ignored (the slot's log line showed <c>interShot=0.21s</c>).
+    /// interval key being ignored (the observed interval was <c>interShot=0.21s</c>).
     ///
     /// The interval answers to <c>InterShotDelaySeconds</c> alone. The single exception is
     /// an instant volley (<c>ImpactDelaySeconds &lt;= 0</c>): that fires every round on the frame of the

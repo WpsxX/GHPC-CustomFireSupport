@@ -20,7 +20,7 @@ namespace CustomFireSupport
     /// each material's original shader with Shader.Find, assigns it and re-applies every property and
     /// keyword. The result is the game's own effect, one to one. Only a shader missing from the running
     /// build falls back to the bundled simplified flipbook shader (still no white boxes, just an
-    /// approximation), and the log says exactly which ones.
+    /// approximation).
     /// </summary>
     internal static class CasBundleMaterialRepair
     {
@@ -174,12 +174,9 @@ namespace CustomFireSupport
                 // scene may have the native material or shader loaded by then, so only while one of those
                 // is left does the next scene need to scan again.
                 _everythingResolved = approximated == 0 && unknown == 0;
-                if (missingShaders.Count > 0)
-                    Log.Warn("CAS material repair: waiting for native shaders: " + string.Join(", ", missingShaders.ToArray()));
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Log.Error("CAS material repair failed: " + ex);
             }
             finally
             {

@@ -1,7 +1,6 @@
 using HarmonyLib;
 using System;
 using System.Collections.Generic;
-using System.Text;
 using GHPC;
 using GHPC.UI.Map;
 using GHPC.Vehicle;
@@ -18,7 +17,6 @@ namespace CustomFireSupport
     {
         internal MunitionKind Munition;
         internal BatteryMunitionsChoice Choice;
-        internal string Source;
 
         /// <summary>
         /// The vanilla battery this shell came from (null for ammo-asset-only templates). The custom
@@ -177,7 +175,6 @@ namespace CustomFireSupport
                         Ammo = codex,
                         DefaultProjectile = null
                     },
-                    Source = "loaded ammo asset"
                 });
             }
 
@@ -215,7 +212,6 @@ namespace CustomFireSupport
                             Ammo = null,
                             DefaultProjectile = smokePrefab
                         },
-                        Source = DescribePrefabSource(smokePrefab) + " smoke shell for " + playerFaction
                     });
                 }
             }
@@ -237,24 +233,11 @@ namespace CustomFireSupport
                             Ammo = null,
                             DefaultProjectile = flare
                         },
-                        Source = DescribePrefabSource(flare) + " illumination shell for " + playerFaction
                     });
                 }
             }
 
-            if (templates.Count == 0)
-            {
-                Log.Warn("no artillery shell templates found in this mission (no batteries and no loaded ammo codex) - artillery slots cannot be created here.");
-            }
             return templates;
-        }
-
-        /// <summary>Where a fallback prefab came from, for the log ("game asset" / "cas_assets bundle").</summary>
-        private static string DescribePrefabSource(GameObject prefab)
-        {
-            return CasPrewarmer.IsFromOurBundle(prefab)
-                ? "from the mod's cas_assets bundle"
-                : "from the game's own loaded assets";
         }
 
         /// <summary>
@@ -334,7 +317,6 @@ namespace CustomFireSupport
         private static BatteryProfile ReadProfile(ArtilleryBattery battery, Faction side)
         {
             BatteryProfile profile = new BatteryProfile();
-            profile.SourceName = string.IsNullOrEmpty(battery.FriendlyName) ? side.ToString() : battery.FriendlyName;
             profile.ImpactDelaySeconds = battery.OnCallDelaySeconds;
             profile.CooldownSeconds = battery.CooldownAmount;
             profile.FromHeadingDegrees = battery.FromHeading;
@@ -413,8 +395,6 @@ namespace CustomFireSupport
                             DefaultProjectile = choice.DefaultProjectile
                         },
                         SourceBattery = battery,
-                        Source = batteryFaction + " battery '" + battery.FriendlyName + "'" +
-                                 (batteryFaction == playerFaction ? " (player)" : string.Empty)
                     });
                 }
             }
@@ -451,7 +431,7 @@ namespace CustomFireSupport
         /// True when a loaded ammo codex could plausibly be an ARTILLERY shell. The loaded-asset
         /// fallback sees every ammo the game has in memory - the mod's own 30 mm CAS rounds, ATGMs,
         /// rifle cartridges, hand grenades - and a slot fires the first candidate of its shell type,
-        /// so a nonsense round used to become "the HE shell": the log of a Fulda 1989 mission showed
+        /// so a nonsense round used to become "the HE shell": a Fulda 1989 mission exposed this by
         /// slot 2 firing a 9M14 Malyutka ATGM and then a PGU-13/B 30 mm round, with the mission's real
         /// '155mm HE shell' sitting at the tail of the candidate list.
         ///
@@ -704,25 +684,6 @@ namespace CustomFireSupport
                 return MunitionKind.AntiArmor;
             }
             return MunitionKind.AntiPersonnel;
-        }
-
-        internal static string DescribeAttacks(AttackKind[] attacks)
-        {
-            if (attacks == null || attacks.Length == 0)
-            {
-                return "none";
-            }
-
-            StringBuilder builder = new StringBuilder();
-            for (int i = 0; i < attacks.Length; i++)
-            {
-                if (i > 0)
-                {
-                    builder.Append('+');
-                }
-                builder.Append(SlotConfigParsing.ToConfigName(attacks[i]));
-            }
-            return builder.ToString();
         }
 
         // ------------------------------------------------------------------

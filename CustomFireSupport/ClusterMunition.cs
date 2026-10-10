@@ -36,7 +36,7 @@ namespace CustomFireSupport
         /// <summary>The cargo round's ammo codex - what the battery's munitions choice hands the game.</summary>
         internal AmmoCodexScriptable Codex;
 
-        /// <summary>Display data for the log ("M864 Cluster", "M864 HEDP", 72).</summary>
+        /// <summary>Names and count stamped onto the generated cargo round and submunitions.</summary>
         internal ClusterShellSpec Spec;
 
         /// <summary>The cartridges released at the burst point.</summary>
@@ -160,8 +160,6 @@ namespace CustomFireSupport
         /// </summary>
         private static readonly Quaternion AirburstRotation = Quaternion.Euler(180f, 0f, 0f);
 
-        private static bool _warnedNoBurstEffect;
-
         /// <summary>
         /// Opens the cargo round: one "small explosion" (the game's 20 mm HE effect, pointed straight
         /// down, plus the game's autocannon explosion sound) and one HEDP submunition per charge.
@@ -203,9 +201,8 @@ namespace CustomFireSupport
                         spawned = true;
                     }
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("cluster munition: could not spawn the airburst effect: " + ex);
                 }
             }
 
@@ -218,14 +215,6 @@ namespace CustomFireSupport
                 fx.name = "CFS cluster airburst " + effect.Name;
                 UnityEngine.Object.Destroy(fx, 15f);
                 spawned = true;
-            }
-
-            if (!spawned && !_warnedNoBurstEffect)
-            {
-                _warnedNoBurstEffect = true;
-                Log.Warn("cluster munition: the game resolved no 20 mm HE explosion effect for the airburst " +
-                         "(the mission's effect database is missing that entry); the burst itself still fires " +
-                         "and the submunitions still work.");
             }
 
             PlayAirburstSound(position);
@@ -270,9 +259,8 @@ namespace CustomFireSupport
             {
                 round = LiveRoundUtility.GetNewLiveRound(ammo);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Log.Error("cluster munition: could not take a live round for a submunition: " + ex);
                 return;
             }
             if (round == null)
@@ -399,8 +387,6 @@ namespace CustomFireSupport
         /// <summary>The mod's own fragment round, built once per session.</summary>
         private static AmmoType _fragmentAmmo;
 
-        private static bool _warnedNoSpallAmmo;
-
         /// <summary>
         /// Throws one submunition's fragments at its current position, once. Safe to call for any round: a
         /// round that is not one of the mod's submunitions is rejected on the first field read.
@@ -421,9 +407,8 @@ namespace CustomFireSupport
                 }
                 marker.FragmentsThrown = true;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Log.Error("cluster fragments: could not check the submunition: " + ex);
                 return;
             }
 
@@ -442,9 +427,8 @@ namespace CustomFireSupport
                 {
                     fragment = marshaller.GetRoundOfVisualType(LiveRoundMarshaller.LiveRoundVisualType.Spall);
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    Log.Error("cluster fragments: could not take a live round for a fragment: " + ex);
                     break;
                 }
                 if (fragment == null)
@@ -499,12 +483,6 @@ namespace CustomFireSupport
             AmmoType spall = LiveRound.SpallAmmoType;
             if (spall == null)
             {
-                if (!_warnedNoSpallAmmo)
-                {
-                    _warnedNoSpallAmmo = true;
-                    Log.Warn("cluster fragments: the game has no spall round loaded, so the submunitions' " +
-                             "fragments are skipped (their blast and frag cloud still work).");
-                }
                 return null;
             }
 

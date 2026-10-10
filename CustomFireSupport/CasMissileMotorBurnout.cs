@@ -62,15 +62,6 @@ namespace CustomFireSupport
             }
         }
 
-        /// <summary>
-        /// True while the motor is still burning. Kept for the log and for anything that wants the motor's
-        /// own clock; the guidance uses its profile's own figure (the two are the same value, set together).
-        /// </summary>
-        internal bool MotorBurning
-        {
-            get { return !_motorOut; }
-        }
-
         private void Update()
         {
             try
@@ -99,9 +90,8 @@ namespace CustomFireSupport
                     enabled = false;
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Log.Error("CAS missile motor burnout failed: " + ex);
                 enabled = false;
             }
         }
@@ -132,17 +122,11 @@ namespace CustomFireSupport
 
             _lights = GetComponentsInChildren<Light>(true);
 
-            if (_flames.Count == 0)
-            {
-                Log.Warn("CAS missile motor: this missile prefab has no '" + FlamePrefix +
-                         "' objects, so the motor cannot be switched off in flight.");
-            }
         }
 
         /// <summary>Switches off the flames whose name contains the stage (null = all of them).</summary>
-        private int SetFlamesOff(string stage)
+        private void SetFlamesOff(string stage)
         {
-            int count = 0;
             for (int i = 0; i < _flames.Count; i++)
             {
                 GameObject flame = _flames[i];
@@ -152,9 +136,7 @@ namespace CustomFireSupport
                     continue;
                 }
                 flame.SetActive(false);
-                count++;
             }
-            return count;
         }
 
         /// <summary>
@@ -167,11 +149,10 @@ namespace CustomFireSupport
         /// armed and begin puffing after the motor is already out. <c>StopEmittingAndClear</c> plus an
         /// explicit <c>Clear</c> removes the particles already in the air, so the trail really goes with the
         /// plume instead of trailing on for its full particle lifetime, and switching the renderer off keeps
-        /// anything that somehow survives from being drawn. Returns a description for the log.
+        /// anything that somehow survives from being drawn.
         /// </summary>
-        private string StopMotorParticles()
+        private void StopMotorParticles()
         {
-            List<string> stopped = new List<string>();
             ParticleSystem[] systems = GetComponentsInChildren<ParticleSystem>(true);
             for (int i = 0; i < systems.Length; i++)
             {
@@ -188,52 +169,38 @@ namespace CustomFireSupport
                 {
                     renderer.enabled = false;
                 }
-                stopped.Add("'" + system.name + "'");
             }
-
-            if (stopped.Count == 0)
-            {
-                return "no smoke / heat effect(s) found on the missile";
-            }
-            return stopped.Count + " trail effect(s) stopped and cleared (" +
-                   string.Join(", ", stopped.ToArray()) + ")";
         }
 
         /// <summary>
         /// Silences the motor: the donor's looping engine sound node is switched off together with the
         /// flame, so a burned-out missile is quiet.
         /// </summary>
-        private int StopAudio()
+        private void StopAudio()
         {
-            int count = 0;
             for (int i = 0; i < _audioNodes.Count; i++)
             {
                 GameObject node = _audioNodes[i];
                 if (node != null && node.activeSelf)
                 {
                     node.SetActive(false);
-                    count++;
                 }
             }
-            return count;
         }
 
-        private int SetLightsOff()
+        private void SetLightsOff()
         {
-            int count = 0;
             if (_lights == null)
             {
-                return 0;
+                return;
             }
             for (int i = 0; i < _lights.Length; i++)
             {
                 if (_lights[i] != null && _lights[i].enabled)
                 {
                     _lights[i].enabled = false;
-                    count++;
                 }
             }
-            return count;
         }
     }
 }
