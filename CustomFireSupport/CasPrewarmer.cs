@@ -295,6 +295,9 @@ namespace CustomFireSupport
                 LoadExtraBundle();
                 CasBundleMaterialRepair.RepairBundleMaterials();
             }
+            // Repeated preparation also retries references whose FMOD banks were
+            // unavailable during the first menu prewarm. Do this before cloning.
+            CasAudioRepair.RepairBundleAudio();
             if (_done) return;
             _done = true;
 

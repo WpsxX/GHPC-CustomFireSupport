@@ -44,6 +44,7 @@ namespace CustomFireSupport
     internal sealed class CustomCasMarker : MonoBehaviour
     {
         private CASController _controller;
+        internal int AttackRevision;
 
         internal void Bind(CASController controller) { _controller = controller; }
 
@@ -89,6 +90,8 @@ namespace CustomFireSupport
 
         /// <summary>Loadout assets created for this mission's CAS sorties (see CustomCasMarker).</summary>
         private static readonly HashSet<CASLoadoutScriptable> _ourLoadouts = new HashSet<CASLoadoutScriptable>();
+        private static readonly Dictionary<SlotConfig, Dictionary<CasTemplate, CASLoadoutScriptable>> CachedLoadouts =
+            new Dictionary<SlotConfig, Dictionary<CasTemplate, CASLoadoutScriptable>>();
 
         /// <summary>
         /// Last airframe name flown by each slot, so a bomb / rocket slot's per-call draw never repeats
@@ -106,6 +109,7 @@ namespace CustomFireSupport
         {
             foreach (CASLoadoutScriptable loadout in _ourLoadouts) CasMissionLifecycle.Retire(loadout);
             _ourLoadouts.Clear();
+            CachedLoadouts.Clear();
             _lastPickedAirframe.Clear();
         }
 
@@ -279,6 +283,11 @@ namespace CustomFireSupport
                 return null;
             }
 
+            Dictionary<CasTemplate, CASLoadoutScriptable> variants;
+            CASLoadoutScriptable cached;
+            if (CachedLoadouts.TryGetValue(config, out variants) && variants.TryGetValue(template, out cached))
+                return CreateCasSlot(config, templates, template, cached);
+
             // Resolve the payload: the template's own hardpoints unless a requested attack type cannot
             // be mounted on them. The game can only fire attack types whose hardpoints are physically
             // mounted (CASHardpointManager.CanDoAttackType), so an aircraft that ships with bombs only
@@ -378,6 +387,18 @@ namespace CustomFireSupport
             loadoutAsset.Loadout = loadout;
             _ourLoadouts.Add(loadoutAsset);
 
+            if (variants == null)
+            {
+                variants = new Dictionary<CasTemplate, CASLoadoutScriptable>();
+                CachedLoadouts[config] = variants;
+            }
+            variants[template] = loadoutAsset;
+            return CreateCasSlot(config, templates, template, loadoutAsset);
+        }
+
+        private static CasSlot CreateCasSlot(SlotConfig config, List<CasTemplate> templates,
+            CasTemplate template, CASLoadoutScriptable loadoutAsset)
+        {
             CasAirframeUnit airframe = new CasAirframeUnit();
             airframe.airframePrefab = template.Prefab;
             airframe.Loadout = loadoutAsset;
@@ -785,11 +806,10 @@ namespace CustomFireSupport
                 }
                 CASAttackMeta meta = authored != null ? authored.DeepCopy() : new CASAttackMeta { UniqueType = type };
 
-                // The unified gun run streams its magazine at a fixed rate; the per-airframe authored
-                // timing (if any) is overridden so every GunRun behaves identically.
+                // The gun's rate follows the selected airframe's GAU-8 or GSh-30-2 belt.
                 if (type == CASAttackType.GunRun)
                 {
-                    CasPayloadFactory.ApplyGunRateOfFire(meta);
+                    CasPayloadFactory.ApplyGunRateOfFire(meta, template.Name);
                 }
                 else if (type == CASAttackType.AirToGroundMissile)
                 {

@@ -97,12 +97,6 @@ namespace CustomFireSupport
 
         private const float GunAudioMaxDistance = 6000f;
 
-        /// <summary>
-        /// A 30 mm detonation is only a few pixels wide at the distance a CAS aircraft fires from, so the
-        /// substituted impact explosion is scaled up to stay visible.
-        /// </summary>
-        private const float FallbackExplosionScale = 2f;
-
         /// <summary>Built hardpoint per profile key; rebuilt if Unity unloaded it with a scene.</summary>
         private static readonly Dictionary<string, GameObject> _built = new Dictionary<string, GameObject>();
 
@@ -122,12 +116,6 @@ namespace CustomFireSupport
         private static readonly Dictionary<string, AmmoCodexScriptable[]> _belts =
             new Dictionary<string, AmmoCodexScriptable[]>();
 
-        /// <summary>
-        /// The 30 mm HIGH EXPLOSIVE detonation prefab of the donor round, used as the visible impact
-        /// explosion for every round of the gun run (the AP round's own effect is a tiny spark).
-        /// </summary>
-        private static GameObject _explosionPrefab;
-
         // Track immediately after creation, including objects from a partially failed build.
         private static readonly List<UnityEngine.Object> _ownedAssets = new List<UnityEngine.Object>();
 
@@ -141,7 +129,6 @@ namespace CustomFireSupport
             Array.Clear(_bombDonors, 0, _bombDonors.Length);
             _missilePrefabs.Clear();
             _pylonBodies.Clear();
-            _explosionPrefab = null;
             ClearPendingImpact();
             // Keep weak ammo identities while old rounds finish unloading.
         }
@@ -171,7 +158,7 @@ namespace CustomFireSupport
                 return null; // only the gun run and the AGM are synthesized (see the doc comment)
             }
 
-            CasAirframeCatalog.GunProfile profile = UnifiedGun;
+            CasAirframeCatalog.GunProfile profile = GunProfileFor(airframeName);
             string key = type + "/" + profile.GunId + "/disp" + accuracy.ToString("0.###");
             GameObject existing;
             if (_built.TryGetValue(key, out existing) && existing != null)
@@ -743,39 +730,44 @@ namespace CustomFireSupport
         // ------------------------------------------------------------------
 
         /// <summary>
-        /// Real GAU-8/A data. Penetration is the user's figure at 60 degrees obliquity (69 mm at 500 m,
-        /// 38 mm at 1000 m) normalised to 0 degrees: 138 mm / 76 mm. GHPC's AmmoType carries a single
-        /// RhaPenetration with no range falloff, so the 500 m value is used.
+        /// GAU-8 API. CasGunBallistics supplies the document's range-dependent velocity and penetration.
         /// </summary>
         private static AmmoCodexScriptable BuildPgu14(AmmoCodexScriptable donor, AmmoCodexScriptable decalDonor)
         {
             return BuildRound(donor, decalDonor, "PGU-14/B API", AmmoType.AmmoCategory.Penetrator,
                 AmmoType.AmmoShortName.Ap,
-                138f, 0.01f, 1010f, 0.425f, 0.09f, 0.000707f, 30f, 0.75f, 0.2f);
+                98f, 0f, 1010f, 0.425f, 0.09f, 0.000707f, 30f, 0.75f, 0f);
         }
 
-        /// <summary>PGU-13/B HEI: 48 g HE filler, minimal penetration, no tracer.</summary>
+        /// <summary>PGU-13/B HEI: 56.5 g filler, fixed 10 mm normal penetration, no tracer.</summary>
         private static AmmoCodexScriptable BuildPgu13(AmmoCodexScriptable donor, AmmoCodexScriptable decalDonor)
         {
             return BuildRound(donor, decalDonor, "PGU-13/B HEI", AmmoType.AmmoCategory.Explosive,
                 AmmoType.AmmoShortName.He,
-                10f, 0.048f, 1010f, 0.36f, 0.10f, 0.000707f, 30f, 1f, 0.6f);
+                10f, 0.0565f, 1010f, 0.36f, 0.10f, 0.000707f, 30f, 1f, 1f);
         }
 
-        /// <summary>OFZ-30 HEI: the Su-22 gun-pod high-explosive incendiary round.</summary>
-        private static AmmoCodexScriptable BuildOfz30(AmmoCodexScriptable donor, AmmoCodexScriptable decalDonor)
+        /// <summary>3UOF8 uses the APDS velocity and drag, with the vanilla 3UOR6 HE effects.</summary>
+        private static AmmoCodexScriptable Build3Uof8(AmmoCodexScriptable donor, AmmoCodexScriptable ap)
         {
-            return BuildRound(donor, decalDonor, "OFZ-30 HEI", AmmoType.AmmoCategory.Explosive,
+            AmmoType ballistics = ap.AmmoType;
+            return BuildRound(donor, donor, "3UOF8 HEI", AmmoType.AmmoCategory.Explosive,
                 AmmoType.AmmoShortName.He,
-                12f, 0.048f, 940f, 0.39f, 0.10f, 0.000707f, 30f, 1f, 0.6f);
+                7f, 0.049f, ballistics.MuzzleVelocity, ballistics.Mass, ballistics.Coeff,
+                ballistics.SectionalArea, 30f, 1f, 1f);
         }
 
-        /// <summary>BR-30 AP: the Su-22 gun-pod armour-piercing fragmentation round (better than the game's 30mm AP).</summary>
-        private static AmmoCodexScriptable BuildBr30(AmmoCodexScriptable donor, AmmoCodexScriptable decalDonor)
+        /// <summary>Use the loaded mod's 3UBR8, or reconstruct its published data from 3UBR6.</summary>
+        private static AmmoCodexScriptable Build3Ubr8(AmmoCodexScriptable donor)
         {
-            return BuildRound(donor, decalDonor, "BR-30 AP", AmmoType.AmmoCategory.Penetrator,
-                AmmoType.AmmoShortName.Ap,
-                80f, 0.008f, 940f, 0.4f, 0.09f, 0.000707f, 30f, 0.75f, 0.2f);
+            AmmoType source = donor.AmmoType;
+            bool exact = (source.Name ?? string.Empty).IndexOf("3ubr8", StringComparison.OrdinalIgnoreCase) >= 0;
+            AmmoCodexScriptable result = BuildRound(donor, null, "3UBR8 APDS-T",
+                AmmoType.AmmoCategory.Penetrator, AmmoType.AmmoShortName.Ap,
+                exact ? source.RhaPenetration : 72f, 0f, exact ? source.MuzzleVelocity : 1120f,
+                exact ? source.Mass : 0.222f, exact ? source.Coeff : 0.012f,
+                exact ? source.SectionalArea : 0.0007f, 30f, source.SpallMultiplier, 0f);
+            return result;
         }
 
         /// <summary>
@@ -812,7 +804,23 @@ namespace CustomFireSupport
             ammo.MaximumRange = 4000f;
             ammo.Guidance = AmmoType.GuidanceType.Unguided;
             ammo.Flight = AmmoType.FlightPattern.Direct;
-            ApplyGunDecal(ammo, decalDonor != null ? decalDonor.AmmoType : null);
+            if (category == AmmoType.AmmoCategory.Explosive)
+            {
+                ApplyGunDecal(ammo, decalDonor != null ? decalDonor.AmmoType : null);
+                ammo.DetonateSpallCount = donor.AmmoType.DetonateSpallCount > 0
+                    ? donor.AmmoType.DetonateSpallCount : 70;
+                ammo.MinSpallRha = 2f;
+                ammo.MaxSpallRha = 4f;
+            }
+            else
+            {
+                ammo.DetonateSpallCount = 0;
+                ammo.AlwaysProduceBlast = false;
+                ammo.ImpactFuseTime = 0f;
+            }
+            ammo.NutationPenaltyDistance = 0f;
+            ammo.RangedFuseTime = 0f;
+            if (name.StartsWith("PGU-", StringComparison.Ordinal)) ammo.Normalize = false;
             // CachedIndex is deliberately left at the donor's value: the impact effect / decal caches
             // are keyed by it, so the clone reuses the donor's effects (the hit effects are copied).
             // A donor that had no cache yet (-1) makes the clone register lazily from its descriptor.
@@ -881,11 +889,7 @@ namespace CustomFireSupport
 
             ImpactDecalsManager.ImpactDecalDescriptor descriptor = decalDonor.ImpactDecalDescriptor;
             descriptor.HasImpactDecal = true;
-            // The HE donor of a 30 mm round is an autocannon round, so its decal family is the BULLET
-            // one - precisely the family the Dirt refusal above rejects, and half of why a gun run left
-            // no mark. A crater IS an explosive mark, and every round in this belt carries a real HE
-            // detonation (the HEI rounds their own; the AP rounds the HE donor's, see _explosionPrefab),
-            // so the category is stated outright rather than inherited from a bullet's descriptor.
+            // Only HE calls this method. Use the crater family instead of an autocannon dent.
             descriptor.DecalCategory = ImpactDecalsManager.DecalCategory.Explosion;
             ammo.ImpactDecalDescriptor = descriptor;
         }
@@ -1481,7 +1485,7 @@ namespace CustomFireSupport
         /// instead (as the old single-donor path did) gave the HE rounds a KINETIC spark effect and a
         /// kinetic "crack" sound - i.e. no explosion at all.
         /// </summary>
-        private static AmmoCodexScriptable FindExplosiveDonor(AmmoCodexScriptable fallback)
+        private static AmmoCodexScriptable FindExplosiveDonor()
         {
             string[] hints = { "3uor6", "3uof", "30mm he", "he-t", "hei", "he-frag", "hef", "he-i" };
 
@@ -1510,7 +1514,7 @@ namespace CustomFireSupport
                 {
                     if (lower.Contains(hints[h]))
                     {
-                        score += 1000;
+                        score += h == 0 ? 10000 : 1000;
                     }
                 }
                 if (Mathf.Abs(ammo.Caliber - 30f) < 0.6f)
@@ -1538,21 +1542,11 @@ namespace CustomFireSupport
                 return best;
             }
 
-            return fallback;
+            return null; // never build an HE round with kinetic-only AP effects
         }
 
         /// <summary>
-        /// Gives a runtime gun hardpoint its belt: the real GAU-8/A mix (4x PGU-14/B API + 1x
-        /// PGU-13/B HEI) for NATO airframes, the Su-22 gun-pod mix (2x OFZ-30 HEI + 1x BR-30 AP) for
-        /// Pact ones. AdvanceBelt() cycles it once per trigger pull.
-        ///
-        /// The AP rounds clone the game's 30mm AP round, the HE rounds the game's 30mm HE round, so
-        /// each round carries exactly the impact effects, decals and audio of its real counterpart.
-        ///
-        /// The HE donor is ALSO the decal donor for both kinds of round (see
-        /// CasPayloadFactory.ApplyGunDecal): the ground mark these rounds leave is the mark of the HE
-        /// round whose explosion they already use, and it is applied to the CLONES only - the donor's own
-        /// ammo object is never modified, so vanilla and campaign strafing keep leaving no crater.
+        /// Both guns start with four AP shots followed by one HE shot. Only HE receives a crater decal.
         /// </summary>
         private static void AttachGunBelt(GameObject hardpoint, string airframeName, AmmoCodexScriptable apDonor)
         {
@@ -1561,22 +1555,24 @@ namespace CustomFireSupport
                 return;
             }
 
-            AmmoCodexScriptable heDonor = FindExplosiveDonor(apDonor);
+            AmmoCodexScriptable heDonor = FindExplosiveDonor();
+            if (heDonor == null) throw new InvalidOperationException("A loaded 30 mm HE donor is required.");
+            AmmoCodexScriptable ap = Build3Ubr8(apDonor);
+            if (ap == null) return;
 
             AmmoCodexScriptable[] belt;
             if (CasAirframeCatalog.GuessSide(airframeName) == AirframeSide.Pact)
             {
-                AmmoCodexScriptable hei = BuildOfz30(heDonor, heDonor);
-                AmmoCodexScriptable ap = BuildBr30(apDonor, heDonor);
+                AmmoCodexScriptable hei = Build3Uof8(heDonor, ap);
                 if (hei == null || ap == null)
                 {
                     return;
                 }
-                belt = new[] { hei, hei, ap };
+                belt = new[] { ap, ap, ap, ap, hei };
             }
             else
             {
-                AmmoCodexScriptable api = BuildPgu14(apDonor, heDonor);
+                AmmoCodexScriptable api = BuildPgu14(ap, null);
                 AmmoCodexScriptable hei = BuildPgu13(heDonor, heDonor);
                 if (api == null || hei == null)
                 {
@@ -1593,11 +1589,6 @@ namespace CustomFireSupport
             // CASHardpointManager.SetUpHardpoints is named "<template> (Clone)" and can ask for its
             // belt back if the serializer dropped it (see AdvanceBelt).
             _belts[hardpoint.name] = belt;
-
-            if (heDonor != null && heDonor.AmmoType != null)
-            {
-                _explosionPrefab = heDonor.AmmoType.DetonateEffect ?? heDonor.AmmoType.TerrainImpactEffect;
-            }
 
             AttachGunAudio(hardpoint);
 
@@ -1645,9 +1636,9 @@ namespace CustomFireSupport
             child.transform.localRotation = Quaternion.identity;
 
             StudioEventEmitter emitter = child.AddComponent<StudioEventEmitter>();
-            emitter.Event = eventPath;
-            emitter.PlayEvent = EmitterGameEvent.None;      // driven by the burst patch, never automatic
-            emitter.StopEvent = EmitterGameEvent.ObjectDestroy;
+            emitter.EventReference = new EventReference { Guid = RuntimeManager.PathToGUID(eventPath) };
+            emitter.EventPlayTrigger = EmitterGameEvent.None; // driven by the burst patch
+            emitter.EventStopTrigger = EmitterGameEvent.ObjectDestroy;
             emitter.TriggerOnce = false;
             emitter.AllowFadeout = true;
             emitter.OverrideAttenuation = true;
@@ -1723,6 +1714,15 @@ namespace CustomFireSupport
             return null;
         }
 
+        internal static Transform FindGunTransform(CASAttackMeta meta)
+        {
+            List<CASHardpoint> included = GunMetaHardpoints(meta);
+            if (included == null) return null;
+            foreach (CASHardpoint hardpoint in included)
+                if (IsRuntimeGun(hardpoint)) return hardpoint.transform;
+            return null;
+        }
+
         /// <summary>Swaps the hardpoint's ammo to the next round of its belt (called per trigger pull).</summary>
         internal static void AdvanceBelt(CASHardpoint hardpoint)
         {
@@ -1748,8 +1748,8 @@ namespace CustomFireSupport
                 belt.Rounds = restored;
                 belt.Index = 0;
             }
-            belt.Index = (belt.Index + 1) % belt.Rounds.Length;
             AmmoRef(hardpoint) = belt.Rounds[belt.Index];
+            belt.Index = (belt.Index + 1) % belt.Rounds.Length;
         }
 
         /// <summary>The belt registered for the template a clone was instantiated from, or null.</summary>
@@ -1791,13 +1791,7 @@ namespace CustomFireSupport
             AccessTools.FieldRefAccess<CASAttackMeta, List<CASHardpoint>>("_hardpointsIncluded");
 
         /// <summary>
-        /// Guaranteed impact EXPLOSION for the mod's own rounds.
-        ///
-        /// The vanilla path (ParticleEffectsManager.CreateImpactEffectOfType) is tried first; this is
-        /// only called when it produced nothing, so there are never two effects on one hit. It spawns
-        /// the donor round's 30 mm HIGH EXPLOSIVE detonation prefab (the AP round's own effect is a
-        /// tiny spark that is invisible from the distance a strafe is watched at), scaled up so the
-        /// burst reads as a line of explosions.
+        /// Fallback impact from this round's own AP or HE donor, at the donor's original scale.
         ///
         /// No audio here on purpose: LiveRound.doImpactEffect always plays Info.ImpactAudio before it
         /// calls the VFX, so a round's own impact sound - kinetic crack for the AP rounds, the game's
@@ -1819,16 +1813,11 @@ namespace CustomFireSupport
             AmmoType info = round.Info;
             Vector3 position = round.transform.position;
 
-            GameObject prefab = _explosionPrefab;
-            if (prefab == null)
-            {
-                prefab = terrainHit ? info.TerrainImpactEffect : info.DetonateEffect;
-            }
+            GameObject prefab = terrainHit ? info.TerrainImpactEffect : info.DetonateEffect;
             if (prefab != null)
             {
                 GameObject fx = UnityEngine.Object.Instantiate(prefab, position, Quaternion.identity);
                 fx.name = "CFS impact " + info.Name;
-                fx.transform.localScale = fx.transform.localScale * FallbackExplosionScale;
                 UnityEngine.Object.Destroy(fx, 15f);
             }
 
@@ -1854,9 +1843,7 @@ namespace CustomFireSupport
         }
 
         /// <summary>
-        /// The single gun-run spec applied to both sides: 140 rounds, 3900 rpm (the real GAU-8/A rate).
-        /// The rounds themselves are the mod's own (see BuildGunBelt): PGU-14/B API + PGU-13/B HEI for
-        /// NATO airframes, OFZ-30 HEI + BR-30 AP for Pact ones.
+        /// 140 rounds per run: GAU-8 at 3900 rpm or GSh-30-2 at 3000 rpm, each with its own 4:1 belt.
         ///
         /// DeviationDegrees is the gun's NATURAL launch deviation. It is only the fallback value of the
         /// hardpoint now: CasAccuracyPatch zeroes the launch deviation at fire time, because the rounds
@@ -1864,30 +1851,34 @@ namespace CustomFireSupport
         /// real GAU-8/A dispersion ("80% of rounds inside a 6.1 m radius at 1200 m", i.e.
         /// dev = (6.1/1200 rad) / 0.5046), kept so the hardpoint looks sane in the inspector.
         /// </summary>
-        private static readonly CasAirframeCatalog.GunProfile UnifiedGun = new CasAirframeCatalog.GunProfile
+        private static CasAirframeCatalog.GunProfile GunProfileFor(string airframeName)
         {
-            GunId = "GAU-8/A / GSh-30 30mm (unified gun run)",
-            // Donor-round hints only: the actual belt is built by BuildGunBelt.
-            AmmoHints = new[] { "30mm", "3ubr6", "3uor6" },
-            Munitions = 140,
-            DeviationDegrees = 0.58f,
-            InheritVelocity = true,
-            RateOfFireRPM = 3900f
-        };
+            bool pact = CasAirframeCatalog.GuessSide(airframeName) == AirframeSide.Pact;
+            return new CasAirframeCatalog.GunProfile
+            {
+                GunId = pact ? "GSh-30-2" : "GAU-8/A",
+                AmmoHints = new[] { "3ubr8", "3ubr6" },
+                Munitions = 140,
+                DeviationDegrees = 0.58f,
+                InheritVelocity = true,
+                RateOfFireRPM = pact ? 3000f : 3900f
+            };
+        }
 
         /// <summary>
-        /// Applies the unified gun's stream fire rate to the GunRun attack entry: one round per
+        /// Applies the airframe's gun fire rate to the GunRun attack entry: one round per
         /// trigger pull, pulled at 60/rpm seconds apart, so the whole magazine streams out as a burst.
         /// Called from CustomSlotBuilder when building the synthesized GunRun attack meta.
         /// </summary>
-        internal static void ApplyGunRateOfFire(CASAttackMeta meta)
+        internal static void ApplyGunRateOfFire(CASAttackMeta meta, string airframeName)
         {
-            if (meta == null || UnifiedGun.RateOfFireRPM <= 0f)
+            CasAirframeCatalog.GunProfile profile = GunProfileFor(airframeName);
+            if (meta == null)
             {
                 return;
             }
-            meta.TriggerPulls = UnifiedGun.Munitions;
-            meta.TriggerPullInterval = 60f / UnifiedGun.RateOfFireRPM;
+            meta.TriggerPulls = profile.Munitions;
+            meta.TriggerPullInterval = 60f / profile.RateOfFireRPM;
         }
 
         /// <summary>True when the object is one of our runtime-built hardpoints (any attack type).</summary>
@@ -2032,6 +2023,11 @@ namespace CustomFireSupport
                 {
                     continue;
                 }
+                else if (type == CASAttackType.GunRun &&
+                    (ammo.Category != AmmoType.AmmoCategory.Penetrator || ammo.Caliber < 20f || ammo.Caliber > 40f))
+                {
+                    continue;
+                }
 
                 string name = ammo.Name != null ? ammo.Name : codex.name;
                 string lower = name.ToLowerInvariant();
@@ -2043,7 +2039,7 @@ namespace CustomFireSupport
                     {
                         if (lower.Contains(profile.AmmoHints[h].ToLowerInvariant()))
                         {
-                            score += 1000;
+                            score += h == 0 ? 10000 : 1000;
                         }
                     }
                 }
@@ -2083,8 +2079,8 @@ namespace CustomFireSupport
 
     /// <summary>
     /// The belt of one runtime gun hardpoint: the ammo codexes are cycled round-robin so a burst mixes
-    /// the real GAU-8/A load (4x PGU-14/B API + 1x PGU-13/B HEI) or the Su-22 gun-pod load
-    /// (2x OFZ-30 HEI + 1x BR-30 AP). Advanced by CasPayloadFactory.AdvanceBelt on every trigger pull.
+    /// the GAU-8/A load (4x PGU-14/B API + 1x PGU-13/B HEI) or the GSh-30-2 load
+    /// (4x 3UBR8 APDS-T + 1x 3UOF8 HEI). Advanced once per trigger pull.
     /// </summary>
     internal sealed class CasGunBelt : MonoBehaviour
     {

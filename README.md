@@ -14,7 +14,9 @@
 >   
 > Requires: MelonLoader 0.6.x + Harmony (bundled with MelonLoader)
 >   
-> Version: **v1.0.7**
+> Version: **v1.0.8**
+
+Compatible with 20261014.
 
 The mod puts **6 configurable slots** on the mission map's fire-support panel.
   
@@ -45,7 +47,7 @@ Set a slot's `Enabled` to `false` if you do not need it; to repurpose a slot, se
 
 ## 0. Install and when it takes effect
 
-1. Download the latest `CustomFireSupport-v1.0.3.zip` from this repository's **Releases** page.
+1. Download the latest `CustomFireSupport-v1.0.8.zip` from this repository's **Releases** page.
 2. Copy `CustomFireSupport.dll` from the zip into `<game>\Bin\Mods\`.
 3. Copy `cas_assets` from the zip into the same `<game>\Bin\Mods\` folder (**it must sit next to the
      
@@ -216,6 +218,13 @@ Values (comma-separated, multiple allowed; `Any` or empty = no filter, i.e. ever
 ---
 
 ## 6. Changelog
+
+### v1.0.8
+
+- Compatible with 20261014.
+- Added anti-air capability to autocannons.
+- AGM-65 can strike two different targets.
+- Fixed map slots occasionally disappearing.
 
 ### v1.0.7
 

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
@@ -159,6 +159,39 @@ namespace CustomFireSupport
                 {
                     __result = true;
                 }
+            }
+        }
+
+        /// <summary>
+        /// AAR's vanilla small-calibre test only knows the three tank-machine-gun short names. The
+        /// custom CAS payloads use real game ammo clones, so classify them by identity instead.
+        /// </summary>
+        [HarmonyPatch(typeof(AarController), "RefreshCurrentAarShots")]
+        internal static class AarSmallCaliberFilterPatch
+        {
+            // Change only the ammo classification read by vanilla. Keep its hit/player/support
+            // filters, selected index, toggles and single DisplayAarShot call intact.
+            private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+            {
+                FieldInfo shortName = AccessTools.Field(typeof(AmmoType), "ShortName");
+                MethodInfo classify = AccessTools.Method(typeof(AarSmallCaliberFilterPatch), "Classify");
+                foreach (CodeInstruction instruction in instructions)
+                {
+                    if (instruction.opcode == System.Reflection.Emit.OpCodes.Ldfld &&
+                        Equals(instruction.operand, shortName))
+                    {
+                        instruction.opcode = System.Reflection.Emit.OpCodes.Call;
+                        instruction.operand = classify;
+                    }
+                    yield return instruction;
+                }
+            }
+
+            internal static AmmoType.AmmoShortName Classify(AmmoType ammo)
+            {
+                if (CasPayloadFactory.IsOurMissile(ammo)) return AmmoType.AmmoShortName.Heat;
+                if (CasPayloadFactory.IsOurRound(ammo)) return AmmoType.AmmoShortName.Mg;
+                return ammo.ShortName;
             }
         }
 
@@ -443,6 +476,7 @@ namespace CustomFireSupport
             private static bool Prefix(CASHardpoint __instance, ref Transform target)
             {
                 bool missile = false;
+                bool airTarget = false;
                 try
                 {
                     if (__instance != null)
@@ -472,12 +506,13 @@ namespace CustomFireSupport
                     CASController controller = __instance.GetComponentInParent<CASController>();
                     // The native manager already passes its locked Transform to this call. FinalTarget
                     // is not a substitute for that argument: it can be cleared while a lock still exists.
-                    Unit launchTarget = missile && target != null ? CasAirTargets.UnitOf(target) : null;
+                    Unit launchTarget = target != null ? CasAirTargets.UnitOf(target) : null;
                     if (launchTarget == null && controller != null) launchTarget = controller.FinalTarget;
                     if (launchTarget == null && controller != null && missile)
                     {
                         launchTarget = CasMissileAttackRun.RecoverLaunchTarget(controller, __instance.Ammo);
                     }
+                    airTarget = CasAirTargets.IsAirUnit(launchTarget);
                     Transform launchPoint = missile && target != null ? target :
                         (launchTarget != null ? launchTarget.Center : null);
                     if (missile && controller != null && launchTarget != null &&
@@ -506,6 +541,12 @@ namespace CustomFireSupport
                         return true;
                     }
 
+                    // This is the final selected target, AFTER AGM A/B selection and immediately
+                    // BEFORE the round is spawned. The earlier controller gate still refers to A.
+                    airTarget = CasAirTargets.IsAirUnit(launchTarget);
+                    if (airTarget && !CasAttackEnvelope.CanReleaseAt(controller, launchTarget, __instance.Type))
+                        return false;
+
                     // The controller we just resolved is handed on, so the slot lookup does not have to
                     // walk the hierarchy a second time for every round of a 140-round burst.
                     float accuracy = CasPayloadFactory.SlotAccuracy(controller, __instance);
@@ -523,7 +564,7 @@ namespace CustomFireSupport
                 catch (Exception)
                 {
                     CasPayloadFactory.ClearPendingImpact();
-                    if (missile)
+                    if (missile || airTarget)
                     {
                         return false;
                     }
@@ -938,7 +979,7 @@ namespace CustomFireSupport
                     }
 
                     // Cycle the gun belt so a burst mixes the real rounds (4x PGU-14/B API + 1x
-                    // PGU-13/B HEI for NATO, 2x OFZ-30 HEI + 1x BR-30 AP for Pact). No-op for the
+                    // PGU-13/B HEI for NATO, 4x 3UBR8 APDS-T + 1x 3UOF8 HEI for Pact). No-op for the
                     // hardpoints that have no belt.
                     CasPayloadFactory.AdvanceBelt(__instance);
 
@@ -1114,12 +1155,12 @@ namespace CustomFireSupport
 
                 // A gun run whose attack entry lost its burst fires ONE round and is over. CASHardpointManager.Fire only reaches MultiFire when
                 // TriggerPulls > 1, so a rebuilt entry carrying the default 1 means a single trigger pull.
-                // The unified gun's own belt is the authority for our gun, so restore it before the burst
+                // The airframe's own gun belt is the authority, so restore its rate before the burst
                 // starts (this has to live here, not in the iterator: an iterator body is compiled into a
                 // generated state machine, out of reach of a static call-graph check).
-                if (meta.UniqueType == CASAttackType.GunRun && meta.TriggerPulls < 2)
+                if (meta.UniqueType == CASAttackType.GunRun)
                 {
-                    CasPayloadFactory.ApplyGunRateOfFire(meta);
+                    CasPayloadFactory.ApplyGunRateOfFire(meta, CasGunAudio.AirframeNameOf(__instance));
                 }
 
                 __result = Burst(__instance, meta, CasGunAudio.AirframeNameOf(__instance));
@@ -1129,16 +1170,15 @@ namespace CustomFireSupport
             private static IEnumerator Burst(CASHardpointManager manager, CASAttackMeta meta, string gunAirframeName)
             {
                 BusyRef(manager) = true;
+                CASController burstPlane = manager.GetComponentInParent<CASController>();
+                CustomCasMarker burstMarker = burstPlane != null ? burstPlane.GetComponent<CustomCasMarker>() : null;
+                int revision = burstMarker != null ? burstMarker.AttackRevision : 0;
 
                 // Sustained gun sound for the whole burst.
                 //
-                // The mod's OWN recordings are used here (see CasGunAudio): a GAU-8 set with separate
-                // close / mid / far takes and a GSh-30 loop + stop tail, played from an AudioSource with
-                // an inverse-square fade. The game's FMOD emitter stays as the fallback for when the
-                // sound bundle is not installed, so a missing bundle degrades to the old behaviour
-                // instead of a silent strafe.
+                // Custom recordings are one-shot takes with distance attenuation. If unavailable,
+                // keep the hardpoint's native per-round sound; never layer both playback paths.
                 CasGunAudio.Handle gunSound = null;
-                StudioEventEmitter gunAudio = null;
                 bool audioStopped = false;
                 bool busyCleared = false;
                 try
@@ -1147,30 +1187,15 @@ namespace CustomFireSupport
                     {
                         // The emitter hangs off the runtime gun hardpoint, so it travels with the
                         // aircraft and its distance to the player is the distance the sound fades over.
-                        StudioEventEmitter anchor = CasPayloadFactory.FindGunEmitter(meta);
-                        if (anchor != null)
-                        {
-                            gunSound = CasGunAudio.Begin(anchor.transform, gunAirframeName);
-                        }
+                        Transform anchor = CasPayloadFactory.FindGunTransform(meta);
+                        if (meta.UniqueType == CASAttackType.GunRun && anchor != null)
+                            gunSound = CasGunAudio.Begin(anchor, gunAirframeName);
                     }
                     catch (Exception)
                     {
                     }
 
-                    if (gunSound == null)
-                    {
-                        try
-                        {
-                            gunAudio = CasPayloadFactory.FindGunEmitter(meta);
-                            if (gunAudio != null)
-                            {
-                                gunAudio.Play();
-                            }
-                        }
-                        catch (Exception)
-                        {
-                        }
-                    }
+                    CasGunAudio.SetCustomBurst(manager, gunSound != null);
 
                     int total = Mathf.Max(1, meta.TriggerPulls);
                     float interval = Mathf.Max(0.0005f, meta.TriggerPullInterval);
@@ -1180,6 +1205,8 @@ namespace CustomFireSupport
 
                     while (fired < total)
                     {
+                        if ((burstMarker != null && burstMarker.AttackRevision != revision) ||
+                            !CasAttackEnvelope.IsFiring(burstPlane) || !CasAttackEnvelope.Inside(burstPlane, false)) break;
                         while (fired < total && elapsed + 1e-5f >= nextShotAt)
                         {
                             if (FireMeta != null)
@@ -1205,33 +1232,14 @@ namespace CustomFireSupport
                         CasGunAudio.End(gunSound);   // plays the GSh-30 falling-off tail
                         audioStopped = true;
                     }
-                    else if (gunAudio != null)
-                    {
-                        try
-                        {
-                            gunAudio.Stop();
-                            audioStopped = true;
-                        }
-                        catch (Exception)
-                        {
-                        }
-                    }
                     BusyRef(manager) = false;
                     busyCleared = true;
 
                 }
                 finally
                 {
-                    if (!audioStopped && gunAudio != null)
-                    {
-                        try
-                        {
-                            gunAudio.Stop();
-                        }
-                        catch (Exception)
-                        {
-                        }
-                    }
+                    CasGunAudio.SetCustomBurst(manager, false);
+                    if (!audioStopped && gunSound != null) CasGunAudio.End(gunSound);
                     if (!busyCleared)
                     {
                         BusyRef(manager) = false;
@@ -1241,7 +1249,7 @@ namespace CustomFireSupport
         }
 
         /// <summary>
-        /// Throttles the gun's per-round one-shot to every other round.
+        /// Suppresses native shots while a custom burst plays; otherwise keeps every other shot.
         ///
         /// 3900 rpm is 65 FMOD one-shots per second, each of which may start a speed-of-sound coroutine;
         /// that is a lot of audio churn for a sound whose event is longer than the gap. Playing it on
@@ -1259,7 +1267,7 @@ namespace CustomFireSupport
                     {
                         return;
                     }
-                    if ((__instance.TotalMunitionsLaunched & 1) == 0)
+                    if (!CasGunAudio.SuppressSingleShot(__instance) && (__instance.TotalMunitionsLaunched & 1) == 0)
                     {
                         return; // keep the sound on even rounds
                     }
@@ -1280,6 +1288,12 @@ namespace CustomFireSupport
                 {
                     CasPayloadFactory.SetAudioEvent(__instance, __state);
                 }
+            }
+
+            private static Exception Finalizer(CASHardpoint __instance, string __state, Exception __exception)
+            {
+                Postfix(__instance, __state);
+                return __exception;
             }
         }
 
@@ -1526,6 +1540,12 @@ namespace CustomFireSupport
                     if (surfaceMaterial != ParticleEffectsManager.SurfaceMaterial.Dirt)
                     {
                         return true;
+                    }
+
+                    // API/APDS keep their kinetic impact effects and armor dents, but never craters.
+                    if (!missile && ammo.Category != AmmoType.AmmoCategory.Explosive)
+                    {
+                        return false;
                     }
 
                     if (__instance.IsSpall || SpallSkipRef(__instance))
@@ -2538,7 +2558,7 @@ namespace CustomFireSupport
                     }
                     id = __instance.GetInstanceID();
 
-                    if (!CasAirTargets.IsOurMissileSortie(__instance))
+                    if (!CasAirTargets.CanDeliverAirTarget(__instance))
                     {
                         // Not ours, or no air-to-ground missile left to fly at an aircraft. Only a value
                         // THIS MOD wrote is cleared - the field itself belongs to the game.
@@ -2776,7 +2796,7 @@ namespace CustomFireSupport
                 // sorties. This comes first because it is the only candidate class the ground searches
                 // below cannot reach at all - a plane's spotting cone is 45 deg / 1000 m and the called
                 // point is on the ground, so a helicopter is otherwise only engaged by luck.
-                if (CasAirTargets.IsOurMissileSortie(plane))
+                if (CasAirTargets.CanDeliverAirTarget(plane))
                 {
                     Unit air = FindNearbyEnemyAir(plane, interest, AirSearchRadiusMeters);
                     if (air != null && air != exclude)

@@ -156,6 +156,7 @@ namespace CustomFireSupport
                 // Also clear when support is disabled, including first-load bootstrap paths.
                 CasAttackLibrary.Reset();
                 CustomSlotBuilder.ResetLoadouts();
+                CasBallisticsCache.ResetForScene();
                 CasPayloadFactory.ResetForMission();
                 if (!_global.Enabled)
                 {

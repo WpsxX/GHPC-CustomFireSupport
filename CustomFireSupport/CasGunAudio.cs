@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using GHPC.Vehicle;
+using GHPC.Camera;
+using GHPC.State;
 using UnityEngine;
 
 namespace CustomFireSupport
@@ -119,7 +121,10 @@ namespace CustomFireSupport
             Far = OneShot("CFS GAU8 far")
         };
 
-        // The Soviet GSh-30. The close band plays ONE recording that already contains the whole event:
+        // The Soviet GSh-30. New bundles provide a combined close-range recording.
+        // Legacy bundles call their close recording "burst loop"; Clip resolves that
+        // alias, but it is still played once (AudioSource.loop stays false).
+        // The combined take already contains the whole event:
         // the sustained fire followed by its spin-down, merged offline at 85% / 15% of the burst (140
         // rounds at 3900 rpm = 2.15 s). Because that single take covers the firing AND its ending, this gun
         // needs no loop and no separate stop-tail - which is what makes "it keeps looping after firing"
@@ -134,7 +139,18 @@ namespace CustomFireSupport
 
         private static AssetBundle _bundle;
         private static readonly Dictionary<string, AudioClip> _clips = new Dictionary<string, AudioClip>();
-        private static bool _loadAttempted;
+        private static float _retryLoadAt;
+        private static readonly HashSet<CASHardpointManager> customBursts = new HashSet<CASHardpointManager>();
+
+        internal static void SetCustomBurst(CASHardpointManager manager, bool active)
+        {
+            if (active) customBursts.Add(manager); else customBursts.Remove(manager);
+        }
+
+        internal static bool SuppressSingleShot(CASHardpoint hardpoint)
+        {
+            return hardpoint != null && customBursts.Contains(hardpoint.GetComponentInParent<CASHardpointManager>());
+        }
 
         /// <summary>
         /// Loads the sound bundle. Safe to call repeatedly; the bundle is loaded once and pinned.
@@ -142,11 +158,11 @@ namespace CustomFireSupport
         /// </summary>
         internal static void EnsureLoaded()
         {
-            if (_loadAttempted)
+            if (_clips.Count > 0 || Time.realtimeSinceStartup < _retryLoadAt)
             {
                 return;
             }
-            _loadAttempted = true;
+            _retryLoadAt = Time.realtimeSinceStartup + 5f;
 
             try
             {
@@ -156,7 +172,7 @@ namespace CustomFireSupport
                     return;
                 }
 
-                _bundle = AssetBundle.LoadFromFile(path);
+                if (_bundle == null) _bundle = AssetBundle.LoadFromFile(path);
                 if (_bundle == null)
                 {
                     return;
@@ -240,8 +256,7 @@ namespace CustomFireSupport
         ///
         /// THE SOUND IS DELAYED BY THE SPEED OF SOUND. Gunfire from an aircraft a kilometre away is
         /// heard about three seconds after it is fired, so the burst is scheduled to begin at
-        /// now + distance/343 rather than immediately. PlayScheduled is used (not a timer) so the delay
-        /// is sample-accurate rather than frame-quantised.
+        /// now + distance/343 rather than immediately, using the game's pause-aware clock.
         ///
         /// THE EMITTER IS ANCHORED IN THE WORLD, not parented to the aircraft. Two reasons:
         ///   * the delay means the aircraft may have moved (or been despawned at the end of its pass)
@@ -260,6 +275,7 @@ namespace CustomFireSupport
                 return null;
             }
 
+            GameObject go = null;
             try
             {
                 Vector3 origin = source.position;
@@ -271,7 +287,7 @@ namespace CustomFireSupport
                     return null;
                 }
 
-                GameObject go = new GameObject("CFS Gun Audio");
+                go = new GameObject("CFS Gun Audio");
                 // Anchored in the world (no parent): see the comment above.
                 go.transform.position = origin;
 
@@ -280,7 +296,10 @@ namespace CustomFireSupport
                 // (see VolumeFor), because the shipped rolloff modes cannot express "1/r beyond 500 m
                 // but never louder than the close-range reference".
                 audio.spatialBlend = 1f;
-                audio.rolloffMode = AudioRolloffMode.Linear;
+                // VolumeFor owns attenuation. Avoid attenuating the same sound twice.
+                audio.rolloffMode = AudioRolloffMode.Custom;
+                audio.SetCustomCurve(AudioSourceCurveType.CustomRolloff, AnimationCurve.Linear(0f, 1f, 1f, 1f));
+                audio.playOnAwake = false;
                 audio.minDistance = 1f;
                 audio.maxDistance = 20000f;   // far enough not to clip the sound before we fade it
                 audio.dopplerLevel = 0f;      // the flight time is modelled explicitly below, not by Doppler
@@ -301,16 +320,8 @@ namespace CustomFireSupport
                 handle.LastDistance = distance;
                 handle.Firing = true;                   // the burst is still being fired right now
 
-                // Schedule the clip so it starts at exactly the right moment, then let the per-frame
-                // pump bring the volume up when it arrives.
-                //
-                // Play() must come FIRST. PlayScheduled on a source that has never started does not
-                // reliably begin playback in every Unity version, and because the volume stays at 0 until
-                // the sound is due, a source that silently failed to start is indistinguishable from a
-                // delayed one - i.e. it is heard as no gun sound at all. Play() puts the source in the
-                // playing state; PlayScheduled then moves the start to the requested DSP time.
-                audio.Play();
-                audio.SetScheduledStartTime(AudioSettings.dspTime + delay);
+                // Start from the game clock in DriveVolume. DSP time keeps advancing
+                // during a pause, whereas the game's sound-delay clock does not.
 
                 // The pump must own this handle from now on: the burst ends long before a distant sound
                 // becomes audible, so the FIRING loop cannot be what drives the volume up.
@@ -319,6 +330,7 @@ namespace CustomFireSupport
             }
             catch (Exception)
             {
+                if (go != null) UnityEngine.Object.Destroy(go);
                 return null;
             }
         }
@@ -339,12 +351,14 @@ namespace CustomFireSupport
             {
                 return clip;
             }
+            if (name == "CFS GSh30 combined" && _clips.TryGetValue("CFS GSh30 burst loop", out clip))
+                return clip;
             return null;
         }
 
         private static float DistanceToListener(Vector3 position)
         {
-            Camera camera = Camera.main;
+            Camera camera = CameraManager.MainCam != null ? CameraManager.MainCam : Camera.main;
             Vector3 listener = camera != null ? camera.transform.position : Vector3.zero;
             return Vector3.Distance(listener, position);
         }
@@ -426,6 +440,8 @@ namespace CustomFireSupport
             internal bool Firing;
 
             internal float LastDistance;
+            internal bool PlaybackStarted;
+            internal bool Paused;
 
             /// <summary>
             /// Set by <see cref="End"/> once the shooting has stopped. The take is left to play out and the
@@ -505,6 +521,17 @@ namespace CustomFireSupport
 
             try
             {
+                if (TimeController.Paused)
+                {
+                    if (handle.PlaybackStarted && !handle.Paused) audio.Pause();
+                    handle.Paused = true;
+                    return true;
+                }
+                if (handle.Paused)
+                {
+                    if (handle.PlaybackStarted) audio.UnPause();
+                    handle.Paused = false;
+                }
                 if (Time.time < handle.StartedAt)
                 {
                     // Still in flight. Follow the aircraft only while it is actually firing; after that
@@ -517,17 +544,21 @@ namespace CustomFireSupport
                     return true;
                 }
 
-                if (!audio.isPlaying)
+                if (!handle.PlaybackStarted)
                 {
-                    // Not playing. That is either "the clip has not started yet" or "it has finished".
-                    // The scheduled start can land a frame after StartedAt, so only treat it as finished
-                    // once the expected end has passed - otherwise the emitter would be torn down in the
-                    // very frame the sound was due.
+                    audio.volume = VolumeFor(DistanceToListener(handle.GameObject.transform.position));
+                    audio.Play();
+                    handle.PlaybackStarted = true;
+                }
+                else if (!audio.isPlaying)
+                {
+                    // Unity may need a frame to start a newly requested clip. Retain the
+                    // emitter until its expected end instead of dropping it immediately.
                     float plannedEnd = handle.StartedAt +
                                        Mathf.Max(0.01f, audio.clip != null ? audio.clip.length : 0.5f);
                     if (Time.time < plannedEnd)
                     {
-                        // Due but not started yet: keep it silent for this frame rather than dropping it.
+                        // Keep it available while Unity finishes starting the clip.
                         audio.volume = 0f;
                         return true;
                     }
@@ -569,7 +600,7 @@ namespace CustomFireSupport
 
         private static void TrackTail(Handle handle)
         {
-            // The handle is queued by End; keep one entry per handle.
+            // Both Begin and End queue handles; keep one entry per handle.
             for (int i = 0; i < _tails.Count; i++)
             {
                 if (ReferenceEquals(_tails[i], handle))

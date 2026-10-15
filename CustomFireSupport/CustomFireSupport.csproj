@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
   <PropertyGroup>
@@ -18,6 +18,8 @@
       All game / MelonLoader references below are derived from it.
     -->
     <GameDir Condition=" '$(GameDir)' == '' ">E:\SteamLibrary\steamapps\common\Gunner HEAT PC</GameDir>
+    <ManagedDir Condition=" '$(ManagedDir)' == '' ">$(GameDir)\Bin\GHPC_Data\Managed</ManagedDir>
+    <MelonDir Condition=" '$(MelonDir)' == '' ">$(GameDir)\Bin\MelonLoader\net35</MelonDir>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <DebugSymbols>true</DebugSymbols>
@@ -39,74 +41,79 @@
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="0Harmony">
-      <HintPath>$(GameDir)\Bin\MelonLoader\net35\0Harmony.dll</HintPath>
+      <HintPath>$(MelonDir)\0Harmony.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="MelonLoader">
-      <HintPath>$(GameDir)\Bin\MelonLoader\net35\MelonLoader.dll</HintPath>
+      <HintPath>$(MelonDir)\MelonLoader.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="FMODUnity">
-      <HintPath>$(GameDir)\Bin\GHPC_Data\Managed\FMODUnity.dll</HintPath>
+      <HintPath>$(ManagedDir)\FMODUnity.dll</HintPath>
       <Private>False</Private>
     </Reference>
-    <Reference Include="Assembly-CSharp_publicized">
-      <HintPath>$(GameDir)\Bin\GHPC_Data\Managed\publicized_assemblies\Assembly-CSharp-Publicized.dll</HintPath>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(ManagedDir)\Assembly-CSharp.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
     <Reference Include="UnityEngine">
-      <HintPath>$(GameDir)\Bin\GHPC_Data\Managed\UnityEngine.dll</HintPath>
+      <HintPath>$(ManagedDir)\UnityEngine.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="UnityEngine.CoreModule">
-      <HintPath>$(GameDir)\Bin\GHPC_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
+      <HintPath>$(ManagedDir)\UnityEngine.CoreModule.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="UnityEngine.InputLegacyModule">
-      <HintPath>$(GameDir)\Bin\GHPC_Data\Managed\UnityEngine.InputLegacyModule.dll</HintPath>
+      <HintPath>$(ManagedDir)\UnityEngine.InputLegacyModule.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="UnityEngine.PhysicsModule">
-      <HintPath>$(GameDir)\Bin\GHPC_Data\Managed\UnityEngine.PhysicsModule.dll</HintPath>
+      <HintPath>$(ManagedDir)\UnityEngine.PhysicsModule.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="UnityEngine.ParticleSystemModule">
-      <HintPath>$(GameDir)\Bin\GHPC_Data\Managed\UnityEngine.ParticleSystemModule.dll</HintPath>
+      <HintPath>$(ManagedDir)\UnityEngine.ParticleSystemModule.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="UnityEngine.TerrainModule">
-      <HintPath>$(GameDir)\Bin\GHPC_Data\Managed\UnityEngine.TerrainModule.dll</HintPath>
+      <HintPath>$(ManagedDir)\UnityEngine.TerrainModule.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="UnityEngine.AssetBundleModule">
-      <HintPath>$(GameDir)\Bin\GHPC_Data\Managed\UnityEngine.AssetBundleModule.dll</HintPath>
+      <HintPath>$(ManagedDir)\UnityEngine.AssetBundleModule.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="UnityEngine.AudioModule">
-      <HintPath>$(GameDir)\Bin\GHPC_Data\Managed\UnityEngine.AudioModule.dll</HintPath>
+      <HintPath>$(ManagedDir)\UnityEngine.AudioModule.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="UnityEngine.UIModule">
-      <HintPath>$(GameDir)\Bin\GHPC_Data\Managed\UnityEngine.UIModule.dll</HintPath>
+      <HintPath>$(ManagedDir)\UnityEngine.UIModule.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="UnityEngine.UI">
-      <HintPath>$(GameDir)\Bin\GHPC_Data\Managed\UnityEngine.UI.dll</HintPath>
+      <HintPath>$(ManagedDir)\UnityEngine.UI.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Unity.Addressables">
-      <HintPath>$(GameDir)\Bin\GHPC_Data\Managed\Unity.Addressables.dll</HintPath>
+      <HintPath>$(ManagedDir)\Unity.Addressables.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Unity.ResourceManager">
-      <HintPath>$(GameDir)\Bin\GHPC_Data\Managed\Unity.ResourceManager.dll</HintPath>
+      <HintPath>$(ManagedDir)\Unity.ResourceManager.dll</HintPath>
       <Private>False</Private>
     </Reference>
   </ItemGroup>
   <ItemGroup>
     <Compile Include="CasAirframeCatalog.cs" />
+    <Compile Include="CasAudioRepair.cs" />
+    <Compile Include="CasGunBallistics.cs" />
+    <Compile Include="CasAttackEnvelope.cs" />
+    <Compile Include="CasAirAttackRules.cs" />
+    <Compile Include="CasBallisticsCache.cs" />
     <Compile Include="ArtilleryTiming.cs" />
     <Compile Include="CasAttackLibrary.cs" />
     <Compile Include="CasBundleMaterialRepair.cs" />

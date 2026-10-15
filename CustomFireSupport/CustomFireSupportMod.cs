@@ -27,8 +27,9 @@ namespace CustomFireSupport
                 ConfigSchema.Initialize();
                 HarmonyInstance.PatchAll();
             }
-            catch (Exception)
+            catch (Exception exception)
             {
+                LoggerInstance.Error("CustomFireSupport initialization/patching failed: " + exception);
             }
         }
 
@@ -50,6 +51,7 @@ namespace CustomFireSupport
 
         public override void OnUpdate()
         {
+            CasBallisticsCache.Pump();
             try
             {
                 FireSupportPatches.CasTargetSpreadPatch.Tick();

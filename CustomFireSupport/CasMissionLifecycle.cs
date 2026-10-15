@@ -25,6 +25,7 @@ namespace CustomFireSupport
                 CasCallReadinessRepair.ResetForScene();
                 CasMissileAttackRun.ResetForScene();
                 CasLaserRunHold.ResetForScene();
+                CasBallisticsCache.ResetForScene();
                 CasAttackLibrary.Reset();
                 CustomSlotBuilder.ResetLoadouts();
                 CasPayloadFactory.ResetForMission();

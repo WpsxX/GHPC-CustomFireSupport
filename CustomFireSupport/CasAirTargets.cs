@@ -102,6 +102,19 @@ namespace CustomFireSupport
             return manager != null && manager.CanDoAttackType(CASAttackType.AirToGroundMissile);
         }
 
+        /// <summary>True when this custom sortie has a missile or gun usable against an aircraft.</summary>
+        internal static bool CanDeliverAirTarget(CASController controller)
+        {
+            if (!CasFireChainRepair.IsOurSortie(controller))
+            {
+                return false;
+            }
+            CASHardpointManager manager = controller.GetComponentInChildren<CASHardpointManager>(true);
+            return manager != null &&
+                   (manager.CanDoAttackType(CASAttackType.AirToGroundMissile) ||
+                    manager.CanDoAttackType(CASAttackType.GunRun));
+        }
+
         /// <summary>
         /// OUR SORTIE + AIR-TO-GROUND MISSILE CAPABILITY. Every new behaviour of this feature sits
         /// behind this one test, so vanilla aircraft, enemy aircraft, campaign CAS and every slot that

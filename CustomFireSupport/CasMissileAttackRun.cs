@@ -202,6 +202,8 @@ namespace CustomFireSupport
                        (target.Center.position - exclude.Center.position).sqrMagnitude <=
                            SecondaryTargetRadiusMeters * SecondaryTargetRadiusMeters &&
                        FireSupportPatches.CasTargetSpreadPatch.CanPlaneAttackForAgm(controller, target) &&
+                       (!CasAirTargets.IsAirUnit(target) ||
+                        CasAttackEnvelope.InsideAirTarget(controller, target, CASAttackType.AirToGroundMissile)) &&
                        CasAirTargets.IsVisibleFrom(controller, target);
             }
             catch (System.Exception) { return false; }
@@ -247,17 +249,13 @@ namespace CustomFireSupport
     [HarmonyPatch(typeof(CASController), "GetAimPosition")]
     internal static class CasMissileAimPatch
     {
-        private static void Postfix(CASController __instance, AmmoType ammo, ref Vector3 __result)
+        private static bool Prefix(CASController __instance, AmmoType ammo, ref Vector3 __result)
         {
-            try
-            {
-                if (ammo == null || !CasPayloadFactory.IsOurMissile(ammo)) return;
-                Vector3 target;
-                if (CasMissileAttackRun.TryGetTargetPosition(__instance, out target)) __result = target;
-            }
-            catch (System.Exception)
-            {
-            }
+            if (ammo == null || !CasPayloadFactory.IsOurMissile(ammo)) return true;
+            Vector3 target;
+            __result = CasMissileAttackRun.TryGetTargetPosition(__instance, out target)
+                ? target : __instance.movePointGoal;
+            return false; // Guided missiles need no unguided firing table.
         }
     }
 }
